@@ -1,0 +1,52 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      - dependencies
+      - duplicate
+      - invalid
+      - wontfix
+    authors:
+      - github-actions[bot]
+      - dependabot[bot]
+  categories:
+    - title: 🚀 Features
+      labels:
+        - feature
+        - enhancement
+        - capability
+    - title: 🧰 UX & Developer Experience
+      labels:
+        - ux
+        - ui
+        - design
+        - accessibility
+    - title: 🐛 Fixes
+      labels:
+        - fix
+        - bug
+        - regression
+    - title: 🔌 Interoperability
+      labels:
+        - interop
+        - import-export
+        - openapi
+        - postman
+    - title: 🔐 Security & Secrets
+      labels:
+        - security
+        - secrets
+        - keychain
+    - title: 📦 Infra, CI & Release
+      labels:
+        - infra
+        - ci
+        - release
+        - build
+        - updater
+    - title: 📚 Documentation
+      labels:
+        - docs
+    - title: Other changes
+      labels:
+        - "*"

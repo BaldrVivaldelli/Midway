@@ -1,0 +1,269 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag existente a publicar, por ejemplo v0.2.0 o v0.2.0-beta.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+
+jobs:
+  quality:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend quality gate
+        run: npm run build:ci
+
+      - name: Cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+  build:
+    needs: quality
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform_key: linux-x86_64
+            tauri_args: '--target x86_64-unknown-linux-gnu'
+            artifact_name: bundle-linux-x86_64
+            rust_targets: x86_64-unknown-linux-gnu
+          - runner: windows-latest
+            platform_key: windows-x86_64
+            tauri_args: ''
+            artifact_name: bundle-windows-x86_64
+            rust_targets: ''
+          - runner: macos-latest
+            platform_key: darwin-aarch64
+            tauri_args: '--target aarch64-apple-darwin'
+            artifact_name: bundle-darwin-aarch64
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - runner: macos-latest
+            platform_key: darwin-x86_64
+            tauri_args: '--target x86_64-apple-darwin'
+            artifact_name: bundle-darwin-x86_64
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_PATH: ${{ github.workspace }}/AuthKey.p8
+      MIDWAY_GITHUB_REPOSITORY: ${{ github.repository }}
+      MIDWAY_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      MIDWAY_APP_IDENTIFIER: ${{ vars.MIDWAY_APP_IDENTIFIER || 'com.aatv.midway' }}
+      MIDWAY_PUBLISHER: ${{ vars.MIDWAY_PUBLISHER || 'Midway' }}
+      MIDWAY_HOMEPAGE: ${{ vars.MIDWAY_HOMEPAGE || format('https://github.com/{0}', github.repository) }}
+      MIDWAY_PRODUCT_NAME: ${{ vars.MIDWAY_PRODUCT_NAME || 'Midway' }}
+      MIDWAY_BETA_PRODUCT_NAME: ${{ vars.MIDWAY_BETA_PRODUCT_NAME || 'Midway Beta' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release channel
+        id: channel
+        shell: bash
+        run: |
+          CHANNEL=stable
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            CHANNEL=beta
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Install Linux system dependencies
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Prepare App Store Connect API key
+        if: startsWith(matrix.platform_key, 'darwin') && secrets.APPLE_API_KEY_P8 != ''
+        shell: bash
+        run: |
+          printf '%s' '${{ secrets.APPLE_API_KEY_P8 }}' > "$APPLE_API_KEY_PATH"
+          chmod 600 "$APPLE_API_KEY_PATH"
+
+      - name: Import Apple certificate
+        if: startsWith(matrix.platform_key, 'darwin') && secrets.APPLE_CERTIFICATE != ''
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security find-identity -v -p codesigning build.keychain
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Generate release Tauri config
+        env:
+          MIDWAY_RELEASE_CHANNEL: ${{ steps.channel.outputs.channel }}
+          VITE_MIDWAY_UPDATE_CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: npm run release:prepare
+
+      - name: Frontend quality gate
+        env:
+          VITE_MIDWAY_UPDATE_CHANNEL: ${{ steps.channel.outputs.channel }}
+          VITE_APP_VERSION: ${{ env.RELEASE_TAG }}
+        run: npm run build:ci
+
+      - name: Build and upload Tauri assets
+        id: tauri
+        uses: tauri-apps/tauri-action@v1
+        with:
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: Midway ${{ env.RELEASE_TAG }}
+          releaseBody: |
+            ## Highlights
+            - Review the generated notes below and replace these bullets with the 3–5 cambios más importantes.
+            - Confirmá compatibilidad por plataforma antes de publicar el draft.
+            - Revisá `SHA256SUMS.txt`, `latest.json` y las firmas adjuntas.
+          releaseDraft: true
+          prerelease: ${{ steps.channel.outputs.channel == 'beta' }}
+          generateReleaseNotes: true
+          tauriScript: npm run tauri
+          releaseAssetNamePattern: 'Midway_[version]_[platform]_[arch][_setup][ext]'
+          uploadUpdaterJson: false
+          updaterJsonPreferNsis: true
+          args: >-
+            ${{ matrix.tauri_args }}
+            --config src-tauri/tauri.release.generated.json
+            ${{ steps.channel.outputs.channel == 'beta' && '--config src-tauri/tauri.beta.generated.json' || '' }}
+
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.dmg
+            src-tauri/target/**/release/bundle/**/*.app.tar.gz
+            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/**/release/bundle/**/*.msi
+
+  metadata:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Fetch release metadata from GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release view "$RELEASE_TAG" --json assets,body,isPrerelease,name,tagName > out-release.json
+
+      - name: Download current release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" --dir release-assets
+          find release-assets \( -name 'latest*.json' -o -name 'SHA256SUMS.txt' \) -delete
+
+      - name: Resolve release channel
+        id: channel
+        shell: bash
+        run: |
+          CHANNEL=stable
+          OUTPUT=latest.json
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            CHANNEL=beta
+            OUTPUT=latest-beta.json
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "output=$OUTPUT" >> "$GITHUB_OUTPUT"
+
+      - name: Generate updater manifest
+        run: |
+          node scripts/release/generate-updater-json.mjs \
+            --release-json out-release.json \
+            --assets-dir release-assets \
+            --repo "${{ github.repository }}" \
+            --channel "${{ steps.channel.outputs.channel }}" \
+            --output "${{ steps.channel.outputs.output }}"
+
+      - name: Generate checksums
+        run: |
+          mkdir -p out
+          cp "${{ steps.channel.outputs.output }}" release-assets/
+          node scripts/release/generate-checksums.mjs release-assets out/SHA256SUMS.txt
+
+      - name: Upload metadata assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "${{ steps.channel.outputs.output }}" \
+            out/SHA256SUMS.txt \
+            --clobber

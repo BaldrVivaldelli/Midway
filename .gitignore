@@ -1,0 +1,34 @@
+# Node / frontend
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Tauri / Rust build outputs
+src-tauri/target/
+src-tauri/tauri.release.generated.json
+src-tauri/tauri.beta.generated.json
+
+# Release working directories
+out/
+out-release.json
+release-artifacts/
+release-assets/
+
+# Signing material and local secrets
+AuthKey.p8
+*.p12
+.env
+.env.*
+!.env.example
+
+# Editor / OS clutter
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
