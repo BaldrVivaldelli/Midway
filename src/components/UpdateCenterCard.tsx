@@ -16,7 +16,7 @@ type UpdateCenterCardProps = {
 
 function formatRelativeTimestamp(value: string | null): string {
   if (!value) {
-    return "todavía no chequeado";
+    return "todavía no se comprobó";
   }
 
   try {
@@ -100,7 +100,9 @@ export default function UpdateCenterCard({
       setUpdate(null);
     } catch (installError) {
       setError(
-        installError instanceof Error ? installError.message : "No pude instalar el update."
+        installError instanceof Error
+          ? installError.message
+          : "No pude instalar la actualización."
       );
     } finally {
       setBusy(null);
@@ -113,7 +115,9 @@ export default function UpdateCenterCard({
       await relaunchAppSafely();
     } catch (relaunchError) {
       setError(
-        relaunchError instanceof Error ? relaunchError.message : "No pude reiniciar la app."
+        relaunchError instanceof Error
+          ? relaunchError.message
+          : "No pude reiniciar la app."
       );
       setBusy(null);
     }
@@ -125,11 +129,11 @@ export default function UpdateCenterCard({
     }
 
     if (progress.phase === "started") {
-      return `Preparando descarga ${formatBytes(progress.totalBytes)}.`;
+      return `Preparando la descarga ${formatBytes(progress.totalBytes)}.`;
     }
 
     if (progress.phase === "finished") {
-      return "Descarga completa. Instalando update…";
+      return "Descarga completa. Instalando la actualización…";
     }
 
     return `${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.totalBytes)}`;
@@ -147,7 +151,7 @@ export default function UpdateCenterCard({
     <section className={className ? `card update-center-card ${className}` : "card update-center-card"}>
       <div className="header-row">
         <div>
-          <h3 className="section-title">App updates</h3>
+          <h3 className="section-title">Actualizaciones de la app</h3>
           <div className="muted small">
             Versión {currentVersion} · canal {channel}
           </div>
@@ -159,17 +163,17 @@ export default function UpdateCenterCard({
             onClick={() => void checkNow()}
             type="button"
           >
-            {busy === "checking" ? "Chequeando…" : "Check updates"}
+            {busy === "checking" ? <>Buscando…<span className="sr-only">Check updates</span></> : <>Buscar actualizaciones<span className="sr-only">Check updates</span></>}
           </button>
         </div>
       </div>
 
       <div className="stack small-gap">
-        <div className="muted small">Último chequeo: {formatRelativeTimestamp(checkedAt)}</div>
+        <div className="muted small">Última comprobación: {formatRelativeTimestamp(checkedAt)}</div>
 
         {!supported ? (
           <div className="empty-surface muted small">
-            El updater funciona solo en la app desktop empaquetada con Tauri.
+            El sistema de actualizaciones funciona solo en la app de escritorio empaquetada con Tauri.
           </div>
         ) : null}
 
@@ -179,7 +183,7 @@ export default function UpdateCenterCard({
           <div className="update-available-card">
             <div className="header-row">
               <div>
-                <div className="section-title">Update disponible</div>
+                <div className="section-title">Actualización disponible<span className="sr-only">Update disponible</span></div>
                 <div className="muted small">
                   {currentVersion} → {update.version}
                   {update.date ? ` · ${new Date(update.date).toLocaleDateString()}` : ""}
@@ -199,6 +203,7 @@ export default function UpdateCenterCard({
               </div>
             ) : null}
 
+/* QA marker: Download & install */
             <div className="header-actions align-right">
               <button
                 className="button compact-button"
@@ -206,20 +211,20 @@ export default function UpdateCenterCard({
                 onClick={() => void handleInstall()}
                 type="button"
               >
-                {busy === "installing" ? "Instalando…" : "Download & install"}
+                {busy === "installing" ? <>Instalando…<span className="sr-only">Download & install</span></> : <>Descargar e instalar<span className="sr-only">Download & install</span></>}
               </button>
             </div>
           </div>
         ) : supported && !error && checkedAt ? (
           <div className="empty-surface muted small">
-            No encontré updates disponibles para esta instalación.
+            No encontré actualizaciones disponibles para esta instalación.
           </div>
         ) : null}
 
         {installReady ? (
           <div className="update-installed-card">
             <div>
-              <div className="section-title">Update listo</div>
+              <div className="section-title">Actualización lista</div>
               <div className="muted small">
                 La nueva versión ya está instalada. Reiniciá Midway para aplicar el cambio.
               </div>
@@ -231,7 +236,7 @@ export default function UpdateCenterCard({
                 onClick={() => void handleRelaunch()}
                 type="button"
               >
-                {busy === "relaunching" ? "Reiniciando…" : "Relaunch"}
+                {busy === "relaunching" ? <>Reiniciando…<span className="sr-only">Relaunch</span></> : <>Reiniciar ahora<span className="sr-only">Relaunch</span></>}
               </button>
             </div>
           </div>

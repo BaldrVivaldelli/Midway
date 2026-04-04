@@ -45,6 +45,7 @@ export default function CodeEditor({
     const resolved = languageExtension(language);
 
     return [
+      oneDark,
       EditorState.readOnly.of(readOnly),
       EditorView.editable.of(!readOnly),
       EditorView.lineWrapping,
@@ -52,61 +53,63 @@ export default function CodeEditor({
       EditorView.theme({
         "&": {
           minHeight: `${minHeight}px`,
-          backgroundColor: "#0b1117"
+          backgroundColor: "#0c1016"
         },
         ".cm-scroller": {
           minHeight: `${minHeight}px`,
           fontFamily:
             '"SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-          fontSize: "13px",
+          fontSize: "13.5px",
           lineHeight: "1.6"
         },
         ".cm-content, .cm-gutter": {
           minHeight: `${minHeight}px`
         },
         ".cm-content": {
-          padding: "14px 0"
+          padding: "16px 0 18px"
+        },
+        ".cm-focused": {
+          outline: "none"
         },
         ".cm-line": {
-          padding: "0 16px"
+          padding: "0 18px"
         },
         ".cm-gutters": {
-          backgroundColor: "#0b1117",
-          color: "#738196",
-          borderRight: "1px solid #1d2733",
+          backgroundColor: "#0c1016",
+          color: "#667082",
+          borderRight: "1px solid rgba(255, 255, 255, 0.035)",
           minHeight: `${minHeight}px`
         },
         ".cm-activeLine, .cm-activeLineGutter": {
-          backgroundColor: readOnly ? "transparent" : "rgba(112, 127, 149, 0.08)"
+          backgroundColor: readOnly ? "transparent" : "rgba(255, 255, 255, 0.034)"
         },
         ".cm-placeholder": {
-          color: "#5c6b80"
+          color: "#70798a"
         },
         ".cm-panels": {
-          backgroundColor: "#11171f",
+          backgroundColor: "#121721",
           color: "#eef2f8"
         },
         ".cm-tooltip": {
-          backgroundColor: "#11171f",
-          border: "1px solid #2a3644",
+          backgroundColor: "#121721",
+          border: "1px solid rgba(255, 255, 255, 0.08)",
           color: "#eef2f8"
         },
         ".cm-tooltip-autocomplete ul li[aria-selected]": {
-          backgroundColor: "#1b2330",
+          backgroundColor: "rgba(255, 255, 255, 0.08)",
           color: "#ffffff"
         },
         ".cm-cursor": {
-          borderLeftColor: "#f1f5fb"
+          borderLeftColor: "#f4f6fb"
         },
         ".cm-selectionBackground, ::selection": {
-          backgroundColor: "rgba(104, 139, 255, 0.26) !important"
+          backgroundColor: "rgba(230, 237, 252, 0.12) !important"
         },
         ".cm-diagnostic": {
           fontFamily:
             'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
         }
       }),
-      oneDark,
       ...(resolved ? (Array.isArray(resolved) ? resolved : [resolved]) : [])
     ] satisfies Extension[];
   }, [language, minHeight, placeholderText, readOnly]);

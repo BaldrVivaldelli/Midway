@@ -105,6 +105,34 @@ type WorkspaceTab = "environments" | "data" | "history";
 type DataTab = "export" | "import";
 type ExportScope = "workspace" | "collection";
 type SidePanel = "workspace" | "runner" | null;
+type AssertionTemplateKey = "status" | "header" | "bodyText" | "jsonPointer";
+
+const ASSERTION_TEMPLATE_OPTIONS: Array<{
+  key: AssertionTemplateKey;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: "status",
+    label: "Estado 200",
+    description: "Verifica el código HTTP"
+  },
+  {
+    key: "header",
+    label: "Encabezado JSON",
+    description: "Valida el content-type"
+  },
+  {
+    key: "bodyText",
+    label: "Cuerpo contiene",
+    description: "Busca un texto útil"
+  },
+  {
+    key: "jsonPointer",
+    label: "JSON /id",
+    description: "Confirma que existe un campo"
+  }
+];
 
 function createId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -128,7 +156,7 @@ function createAssertion(
 ): ResponseAssertion {
   return {
     id: partial.id ?? createId(),
-    name: partial.name ?? "status ok",
+    name: partial.name ?? "estado ok",
     enabled: partial.enabled ?? true,
     source: partial.source ?? "status",
     operator: partial.operator ?? "equals",
@@ -137,10 +165,48 @@ function createAssertion(
   };
 }
 
+function createAssertionTemplate(template: AssertionTemplateKey): ResponseAssertion {
+  switch (template) {
+    case "status":
+      return createAssertion({
+        name: "estado 200",
+        source: "status",
+        operator: "equals",
+        expected: "200"
+      });
+    case "header":
+      return createAssertion({
+        name: "content-type json",
+        source: "header",
+        operator: "contains",
+        selector: "content-type",
+        expected: "application/json"
+      });
+    case "bodyText":
+      return createAssertion({
+        name: "cuerpo contiene title",
+        source: "bodyText",
+        operator: "contains",
+        expected: "title"
+      });
+    case "jsonPointer":
+      return createAssertion({
+        name: "json /id existe",
+        source: "jsonPointer",
+        operator: "exists",
+        selector: "/id",
+        expected: ""
+      });
+  }
+
+  const exhaustiveCheck: never = template;
+  return exhaustiveCheck;
+}
+
 function createInitialDraft(): RequestDraft {
   return {
     id: null,
-    name: "Get post 1",
+    name: "Obtener post 1",
     method: "GET",
     url: "https://jsonplaceholder.typicode.com/posts/1",
     query: [],
@@ -154,13 +220,13 @@ function createInitialDraft(): RequestDraft {
     environmentId: null,
     responseTests: [
       createAssertion({
-        name: "status 200",
+        name: "estado 200",
         source: "status",
         operator: "equals",
         expected: "200"
       }),
       createAssertion({
-        name: "body contiene title",
+        name: "cuerpo contiene title",
         source: "bodyText",
         operator: "contains",
         expected: "title"
@@ -172,7 +238,7 @@ function createInitialDraft(): RequestDraft {
 function createBlankDraft(): RequestDraft {
   return {
     id: null,
-    name: "Nuevo request",
+    name: "Nueva petición",
     method: "GET",
     url: "",
     query: [],
@@ -301,7 +367,7 @@ function KeyValueEditor({
             <input
               className="input"
               onChange={(event) => updateRow(row.id, { value: event.target.value })}
-              placeholder="value"
+              placeholder="valor"
               value={row.value}
             />
 
@@ -367,7 +433,7 @@ function FormDataEditor({
     <section className="card">
       <div className="header-row">
         <div>
-          <h3 className="section-title">Multipart form-data</h3>
+          <h3 className="section-title">Campos multipart</h3>
           <div className="muted small">
             Usá texto o rutas de archivo locales. El backend arma el multipart real.
           </div>
@@ -404,21 +470,21 @@ function FormDataEditor({
               }
               value={row.kind}
             >
-              <option value="text">text</option>
-              <option value="file">file</option>
+              <option value="text">texto</option>
+              <option value="file">archivo</option>
             </select>
 
             <input
               className="input"
               onChange={(event) => updateRow(row.id, { key: event.target.value })}
-              placeholder="field"
+              placeholder="campo"
               value={row.key}
             />
 
             <input
               className="input"
               onChange={(event) => updateRow(row.id, { value: event.target.value })}
-              placeholder={row.kind === "file" ? "/ruta/local/archivo.png" : "value"}
+              placeholder={row.kind === "file" ? "/ruta/local/archivo.png" : "valor"}
               value={row.value}
             />
 
@@ -481,18 +547,38 @@ function AssertionEditor({
     onChange([...assertions, createAssertion()]);
   };
 
+  const addAssertionTemplate = (template: AssertionTemplateKey) => {
+    onChange([...assertions, createAssertionTemplate(template)]);
+  };
+
+  const addStarterPack = () => {
+    onChange([
+      ...assertions,
+      createAssertionTemplate("status"),
+      createAssertionTemplate("header"),
+      createAssertionTemplate("bodyText")
+    ]);
+  };
+
   return (
     <section className="card">
       <div className="header-row">
         <div>
-          <h3 className="section-title">Tests</h3>
+          <h3 className="section-title">Pruebas</h3>
           <div className="muted small">
-            Se ejecutan en Rust después de recibir el response.
+            Se ejecutan en Rust después de recibir la respuesta.
           </div>
         </div>
-        <button className="button secondary" onClick={addAssertion} type="button">
-          + test
-        </button>
+        <div className="header-actions">
+          {assertions.length === 0 ? (
+            <button className="button ghost compact-button" onClick={addStarterPack} type="button">
+              Base rápida
+            </button>
+          ) : null}
+          <button className="button secondary" onClick={addAssertion} type="button">
+            + prueba
+          </button>
+        </div>
       </div>
 
       <div className="rows-grid">
@@ -513,7 +599,7 @@ function AssertionEditor({
               onChange={(event) =>
                 updateAssertion(assertion.id, { name: event.target.value })
               }
-              placeholder="status ok"
+              placeholder="estado ok"
               value={assertion.name}
             />
 
@@ -530,7 +616,7 @@ function AssertionEditor({
             >
               {ASSERTION_SOURCES.map((source) => (
                 <option key={source} value={source}>
-                  {source}
+                  {formatAssertionSourceLabel(source)}
                 </option>
               ))}
             </select>
@@ -546,7 +632,7 @@ function AssertionEditor({
             >
               {ASSERTION_OPERATORS.map((operator) => (
                 <option key={operator} value={operator}>
-                  {operator}
+                  {formatAssertionOperatorLabel(operator)}
                 </option>
               ))}
             </select>
@@ -569,7 +655,7 @@ function AssertionEditor({
               onChange={(event) =>
                 updateAssertion(assertion.id, { expected: event.target.value })
               }
-              placeholder="expected"
+              placeholder="esperado"
               value={assertion.expected}
             />
 
@@ -584,7 +670,50 @@ function AssertionEditor({
         ))}
 
         {assertions.length === 0 ? (
-          <div className="muted small">No hay tests todavía.</div>
+          <div className="card assertion-empty-state" style={{ display: "grid", gap: 18 }}>
+            <div style={{ display: "grid", gap: 8 }}>
+              <div className="eyebrow">arranque rápido</div>
+              <strong style={{ fontSize: 16, letterSpacing: "-0.02em" }}>
+                Armá una base mínima de validaciones en un click
+              </strong>
+              <span className="muted small">
+                Sembrá pruebas comunes para estado, encabezados, cuerpo o JSON y después ajustalas a tu API.
+              </span>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gap: 10,
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))"
+              }}
+            >
+              {ASSERTION_TEMPLATE_OPTIONS.map((template) => (
+                <button
+                  className="button ghost"
+                  key={template.key}
+                  onClick={() => addAssertionTemplate(template.key)}
+                  style={{
+                    display: "grid",
+                    gap: 8,
+                    minHeight: 88,
+                    padding: 16,
+                    textAlign: "left",
+                    justifyItems: "start",
+                    alignContent: "start"
+                  }}
+                  type="button"
+                >
+                  <span style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em" }}>
+                    {template.label}
+                  </span>
+                  <small className="muted" style={{ letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                    {template.description}
+                  </small>
+                </button>
+              ))}
+            </div>
+          </div>
         ) : null}
       </div>
     </section>
@@ -594,7 +723,7 @@ function AssertionEditor({
 function AssertionReportView({
   report,
   emptyMessage,
-  title = "Tests"
+  title = "Pruebas"
 }: {
   report: AssertionReport | null | undefined;
   emptyMessage: string;
@@ -610,7 +739,7 @@ function AssertionReportView({
         <strong>{title}</strong>
         <span className="badge">{report.total}</span>
         <span className="result-pass">{report.passed} ok</span>
-        <span className="result-fail">{report.failed} fail</span>
+        <span className="result-fail">{report.failed} error</span>
       </div>
 
       <div className="rows-grid">
@@ -619,18 +748,18 @@ function AssertionReportView({
             <div className="header-row">
               <strong>{result.name || "sin nombre"}</strong>
               <span className={result.passed ? "result-pass" : "result-fail"}>
-                {result.passed ? "PASS" : "FAIL"}
+                {result.passed ? "OK" : "ERROR"}
               </span>
             </div>
             <div className="muted small">
-              {result.source} · {result.operator}
+              {formatAssertionSourceLabel(result.source)} · {formatAssertionOperatorLabel(result.operator)}
               {result.selector ? ` · ${result.selector}` : ""}
             </div>
             {result.actual !== undefined && result.actual !== null ? (
               <div className="muted small">actual: {result.actual}</div>
             ) : null}
             {result.expected ? (
-              <div className="muted small">expected: {result.expected}</div>
+              <div className="muted small">esperado: {result.expected}</div>
             ) : null}
             <div className="muted small">{result.message}</div>
           </div>
@@ -666,7 +795,7 @@ function AuthEditor({
 
   return (
     <section className="card">
-      <h3 className="section-title">Auth</h3>
+      <h3 className="section-title">Autorización</h3>
 
       <div className="stack">
         <label className="label">
@@ -678,7 +807,7 @@ function AuthEditor({
           >
             {AUTH_TYPES.map((type) => (
               <option key={type} value={type}>
-                {type}
+                {formatAuthTypeLabel(type)}
               </option>
             ))}
           </select>
@@ -686,7 +815,7 @@ function AuthEditor({
 
         {auth.type === "bearer" ? (
           <label className="label">
-            <span>Token template</span>
+            <span>Plantilla del token</span>
             <input
               className="input"
               onChange={(event) => onChange({ ...auth, token: event.target.value })}
@@ -699,7 +828,7 @@ function AuthEditor({
         {auth.type === "basic" ? (
           <div className="grid-2">
             <label className="label">
-              <span>Username</span>
+              <span>Usuario</span>
               <input
                 className="input"
                 onChange={(event) =>
@@ -711,7 +840,7 @@ function AuthEditor({
             </label>
 
             <label className="label">
-              <span>Password template</span>
+              <span>Plantilla de contraseña</span>
               <input
                 className="input"
                 onChange={(event) =>
@@ -727,7 +856,7 @@ function AuthEditor({
         {auth.type === "apiKey" ? (
           <div className="grid-3">
             <label className="label">
-              <span>Key</span>
+              <span>Clave</span>
               <input
                 className="input"
                 onChange={(event) => onChange({ ...auth, key: event.target.value })}
@@ -737,7 +866,7 @@ function AuthEditor({
             </label>
 
             <label className="label">
-              <span>Value template</span>
+              <span>Plantilla del valor</span>
               <input
                 className="input"
                 onChange={(event) => onChange({ ...auth, value: event.target.value })}
@@ -747,7 +876,7 @@ function AuthEditor({
             </label>
 
             <label className="label">
-              <span>Placement</span>
+              <span>Ubicación</span>
               <select
                 className="select"
                 onChange={(event) =>
@@ -760,7 +889,7 @@ function AuthEditor({
               >
                 {API_KEY_PLACEMENTS.map((placement) => (
                   <option key={placement} value={placement}>
-                    {placement}
+                    {formatApiKeyPlacementLabel(placement)}
                   </option>
                 ))}
               </select>
@@ -809,7 +938,7 @@ function CollectionsSidebar({
 
       <div className="sidebar-list">
         {collections.length === 0 ? (
-          <div className="muted small">Todavía no hay collections.</div>
+          <div className="muted small">Todavía no hay colecciones.</div>
         ) : null}
 
         {collections.map((item) => {
@@ -840,13 +969,13 @@ function CollectionsSidebar({
                         <strong>{record.name}</strong>
                       </div>
                       <div className="muted small">
-                        {record.draft.responseTests.length} tests · {record.updatedAt}
+                        {record.draft.responseTests.length} pruebas · {record.updatedAt}
                       </div>
                     </button>
                   ))}
 
                   {item.requests.length === 0 ? (
-                    <div className="muted small">Sin requests guardados.</div>
+                    <div className="muted small">Sin peticiones guardadas.</div>
                   ) : null}
                 </div>
               ) : null}
@@ -865,7 +994,7 @@ function HistorySidebar({ history }: { history: HistoryEntry[] }) {
 
       <div className="sidebar-list">
         {history.length === 0 ? (
-          <div className="muted small">Sin history todavía.</div>
+          <div className="muted small">Sin historial todavía.</div>
         ) : null}
 
         {history.map((entry) => (
@@ -876,7 +1005,7 @@ function HistorySidebar({ history }: { history: HistoryEntry[] }) {
             </div>
             <div className="muted small">{entry.url}</div>
             <div className="muted small">
-              {entry.responseStatus ? `status ${entry.responseStatus}` : "sin status"}
+              {entry.responseStatus ? `estado ${entry.responseStatus}` : "sin estado"}
               {entry.durationMs ? ` · ${entry.durationMs} ms` : ""}
             </div>
             {entry.errorMessage ? (
@@ -909,9 +1038,9 @@ function SecretManager({
     <section className="card">
       <div className="header-row">
         <div>
-          <h3 className="section-title">Secrets</h3>
+          <h3 className="section-title">Secretos</h3>
           <div className="muted small">
-            Aliases locales para auth, headers y variables sensibles. Se guardan en el keychain del sistema.
+            Alias locales para autorización, encabezados y variables sensibles. Se guardan en el llavero del sistema.
           </div>
         </div>
       </div>
@@ -933,7 +1062,7 @@ function SecretManager({
             <input
               className="input"
               onChange={(event) => setValue(event.target.value)}
-              placeholder="shh..."
+              placeholder="••••••"
               type="password"
               value={value}
             />
@@ -941,7 +1070,7 @@ function SecretManager({
         </div>
 
         <div className="section-footer">
-          <div className="muted small">Los valores se guardan en el keychain/credential store del sistema y no se exponen en preview ni en export.</div>
+          <div className="muted small">Los valores se guardan en el llavero o almacén de credenciales del sistema y no se exponen en la vista previa ni en la exportación.</div>
           <div className="header-actions">
             <button
               className="button"
@@ -953,14 +1082,14 @@ function SecretManager({
               }}
               type="button"
             >
-              Guardar secret
+              Guardar secreto
             </button>
           </div>
         </div>
 
         <div className="sidebar-list">
           {secrets.length === 0 ? (
-            <div className="muted small">No hay aliases de secretos todavía.</div>
+            <div className="muted small">No hay alias de secretos todavía.</div>
           ) : null}
 
           {secrets.map((item) => (
@@ -1010,7 +1139,7 @@ function EnvironmentManager({
       <section className="card split-pane-nav">
         <div className="sidebar-section-title">
           <div>
-            <h3 className="section-title">Environments</h3>
+            <h3 className="section-title">Entornos</h3>
             <div className="muted small">Organizá variables por contexto de trabajo.</div>
           </div>
           <button
@@ -1040,7 +1169,7 @@ function EnvironmentManager({
           })}
 
           {environments.length === 0 ? (
-            <div className="muted small">No hay environments todavía.</div>
+            <div className="muted small">No hay entornos todavía.</div>
           ) : null}
         </div>
       </section>
@@ -1049,7 +1178,7 @@ function EnvironmentManager({
         <div className="header-row">
           <div>
             <h3 className="section-title">
-              {activeEnvironment ? "Editar environment" : "Nuevo environment"}
+              {activeEnvironment ? "Editar entorno" : "Nuevo entorno"}
             </h3>
             <div className="muted small">
               {activeEnvironment
@@ -1094,8 +1223,8 @@ function EnvironmentManager({
         <div className="section-footer">
           <div className="muted small">
             {editor.environmentId
-              ? "Este environment ya se puede usar desde el selector Env del request."
-              : "Guardalo para usarlo en el request actual o en el runner."}
+              ? "Este entorno ya se puede usar desde el selector Entorno de la petición."
+              : "Guardalo para usarlo en la petición actual o en la ejecución por lote."}
           </div>
           <div className="header-actions">
             <button
@@ -1104,7 +1233,7 @@ function EnvironmentManager({
               onClick={() => void onSave()}
               type="button"
             >
-              {editor.environmentId ? "Guardar cambios" : "Guardar environment"}
+              {editor.environmentId ? "Guardar cambios" : "Guardar entorno"}
             </button>
           </div>
         </div>
@@ -1116,15 +1245,15 @@ function EnvironmentManager({
 function CollectionRunReportView({ report }: { report: CollectionRunReport | null }) {
   return (
     <section className="card">
-      <h3 className="section-title">Reporte del runner</h3>
+      <h3 className="section-title">Reporte de ejecución</h3>
 
       {report ? (
         <div className="stack">
           <div className="inline-row">
             <strong>{report.collectionName}</strong>
-            <span className="badge">{report.totalRequests} reqs</span>
-            <span className="result-pass">{report.passedAssertions} tests ok</span>
-            <span className="result-fail">{report.failedAssertions} tests fail</span>
+            <span className="badge">{report.totalRequests} peticiones</span>
+            <span className="result-pass">{report.passedAssertions} pruebas ok</span>
+            <span className="result-fail">{report.failedAssertions} pruebas con error</span>
           </div>
 
           <div className="muted small">
@@ -1138,7 +1267,7 @@ function CollectionRunReportView({ report }: { report: CollectionRunReport | nul
                   <div>
                     <strong>{item.requestName}</strong>
                     <div className="muted small">
-                      {item.environmentName ? `env ${item.environmentName}` : "sin env"}
+                      {item.environmentName ? `entorno ${item.environmentName}` : "sin entorno"}
                     </div>
                   </div>
                   {item.responseStatus ? (
@@ -1162,7 +1291,7 @@ function CollectionRunReportView({ report }: { report: CollectionRunReport | nul
 
                 <div style={{ marginTop: 10 }}>
                   <AssertionReportView
-                    emptyMessage="Ese request no llegó a evaluar tests."
+                    emptyMessage="Esa petición no llegó a evaluar pruebas."
                     report={item.assertionReport ?? null}
                     title="Resultados"
                   />
@@ -1173,7 +1302,7 @@ function CollectionRunReportView({ report }: { report: CollectionRunReport | nul
         </div>
       ) : (
         <div className="muted small">
-          Elegí una collection y corré el runner para ver el reporte consolidado.
+          Elegí una colección y ejecutá el lote para ver el reporte consolidado.
         </div>
       )}
     </section>
@@ -1189,7 +1318,7 @@ function CollectionRunProgressView({
     return (
       <section className="card">
         <h3 className="section-title">Progreso</h3>
-        <div className="muted small">Todavía no hay eventos de progreso del runner.</div>
+        <div className="muted small">Todavía no hay eventos de progreso de la ejecución.</div>
       </section>
     );
   }
@@ -1209,10 +1338,10 @@ function CollectionRunProgressView({
         <div>
           <h3 className="section-title">Progreso</h3>
           <div className="muted small">
-            {progress.collectionName} · run {progress.runId.slice(0, 8)}
+            {progress.collectionName} · ejecución {progress.runId.slice(0, 8)}
           </div>
         </div>
-        <span className="badge">{progress.phase}</span>
+        <span className="badge">{formatCollectionRunPhaseLabel(progress.phase)}</span>
       </div>
 
       <div className="stack">
@@ -1226,7 +1355,7 @@ function CollectionRunProgressView({
             {processed}/{progress.totalRequests}
           </span>
           <span className="result-pass">{progress.passedAssertions} ok</span>
-          <span className="result-fail">{progress.failedAssertions} fail</span>
+          <span className="result-fail">{progress.failedAssertions} error</span>
         </div>
 
         <div className="stats-grid">
@@ -1242,7 +1371,7 @@ function CollectionRunProgressView({
 
         {progress.requestName ? (
           <div>
-            <strong>Request actual</strong>
+            <strong>Petición actual</strong>
             <div className="code-block">
               #{progress.currentIndex} {progress.requestName}
             </div>
@@ -1283,7 +1412,21 @@ function TabButton({
       onClick={onClick}
       type="button"
     >
-      <span>{label}</span>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span
+          aria-hidden="true"
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: 999,
+            background: active ? "rgba(246, 244, 239, 0.92)" : "rgba(255, 255, 255, 0.18)",
+            boxShadow: active ? "0 0 0 4px rgba(246, 244, 239, 0.08)" : "none",
+            transform: active ? "scale(1.16)" : undefined,
+            transition: "transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease"
+          }}
+        />
+        <span>{label}</span>
+      </span>
       {meta !== undefined ? <span className="tab-meta">{meta}</span> : null}
     </button>
   );
@@ -1293,6 +1436,108 @@ function defaultRequestTabForMethod(method: HttpMethod): RequestTab {
   return method === "POST" || method === "PUT" || method === "PATCH"
     ? "body"
     : "params";
+}
+
+function formatBodyModeLabel(mode: BodyMode): string {
+  switch (mode) {
+    case "none":
+      return "Sin cuerpo";
+    case "json":
+      return "JSON";
+    case "text":
+      return "Texto";
+    case "formData":
+      return "Multipart";
+  }
+
+  const exhaustiveCheck: never = mode;
+  return exhaustiveCheck;
+}
+
+function formatAuthTypeLabel(type: AuthConfig["type"]): string {
+  switch (type) {
+    case "none":
+      return "Sin autorización";
+    case "bearer":
+      return "Bearer";
+    case "basic":
+      return "Basic";
+    case "apiKey":
+      return "Clave API";
+  }
+
+  const exhaustiveCheck: never = type;
+  return exhaustiveCheck;
+}
+
+function formatApiKeyPlacementLabel(placement: ApiKeyPlacement): string {
+  switch (placement) {
+    case "header":
+      return "Encabezado";
+    case "query":
+      return "Consulta";
+  }
+
+  const exhaustiveCheck: never = placement;
+  return exhaustiveCheck;
+}
+
+function formatAssertionSourceLabel(source: AssertionSource): string {
+  switch (source) {
+    case "status":
+      return "Estado";
+    case "header":
+      return "Encabezado";
+    case "bodyText":
+      return "Cuerpo";
+    case "jsonPointer":
+      return "Puntero JSON";
+    case "finalUrl":
+      return "URL final";
+  }
+
+  const exhaustiveCheck: never = source;
+  return exhaustiveCheck;
+}
+
+function formatAssertionOperatorLabel(operator: AssertionOperator): string {
+  switch (operator) {
+    case "equals":
+      return "igual a";
+    case "contains":
+      return "contiene";
+    case "notContains":
+      return "no contiene";
+    case "exists":
+      return "existe";
+    case "notExists":
+      return "no existe";
+    case "greaterOrEqual":
+      return "mayor o igual";
+    case "lessOrEqual":
+      return "menor o igual";
+  }
+
+  const exhaustiveCheck: never = operator;
+  return exhaustiveCheck;
+}
+
+function formatCollectionRunPhaseLabel(
+  phase: CollectionRunProgressEvent["phase"]
+): string {
+  switch (phase) {
+    case "started":
+      return "iniciada";
+    case "requestStarted":
+      return "ejecutando";
+    case "requestFinished":
+      return "petición lista";
+    case "finished":
+      return "finalizada";
+  }
+
+  const exhaustiveCheck: never = phase;
+  return exhaustiveCheck;
 }
 
 function formatBytes(bytes: number): string {
@@ -1328,7 +1573,7 @@ async function copyTextToClipboard(value: string): Promise<void> {
   }
 
   if (typeof document === "undefined") {
-    throw new Error("El clipboard no está disponible en este entorno.");
+    throw new Error("El portapapeles no está disponible en este entorno.");
   }
 
   const textarea = document.createElement("textarea");
@@ -1345,7 +1590,7 @@ async function copyTextToClipboard(value: string): Promise<void> {
   document.body.removeChild(textarea);
 
   if (!success) {
-    throw new Error("No pude copiar al clipboard.");
+    throw new Error("No pude copiar al portapapeles.");
   }
 }
 
@@ -1383,7 +1628,9 @@ function detectEditorLanguage(value: string): "json" | "text" | "shell" {
   return "text";
 }
 
-function statusTone(status?: number | null): "ok" | "warn" | "error" | "neutral" {
+function statusTone(
+  status?: number | null
+): "ok" | "warn" | "client" | "error" | "neutral" {
   if (status === undefined || status === null) {
     return "neutral";
   }
@@ -1396,7 +1643,11 @@ function statusTone(status?: number | null): "ok" | "warn" | "error" | "neutral"
     return "warn";
   }
 
-  if (status >= 400) {
+  if (status >= 400 && status < 500) {
+    return "client";
+  }
+
+  if (status >= 500) {
     return "error";
   }
 
@@ -1405,7 +1656,7 @@ function statusTone(status?: number | null): "ok" | "warn" | "error" | "neutral"
 
 function ResponseHeadersTable({
   rows,
-  emptyMessage = "Sin headers."
+  emptyMessage = "Sin encabezados."
 }: {
   rows: Array<{ key: string; value: string }>;
   emptyMessage?: string;
@@ -1419,8 +1670,8 @@ function ResponseHeadersTable({
       <table className="data-table">
         <thead>
           <tr>
-            <th>Key</th>
-            <th>Value</th>
+            <th>Clave</th>
+            <th>Valor</th>
           </tr>
         </thead>
         <tbody>
@@ -1433,6 +1684,195 @@ function ResponseHeadersTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ResponseEmptyState({
+  currentTab,
+  busy,
+  hasUrl,
+  sending,
+  environmentName,
+  testsCount,
+  onPreview,
+  onSend,
+  onCancel,
+  onOpenTests
+}: {
+  currentTab: ResponseTab;
+  busy: boolean;
+  hasUrl: boolean;
+  sending: boolean;
+  environmentName: string | null;
+  testsCount: number;
+  onPreview: () => void;
+  onSend: () => void;
+  onCancel: () => void;
+  onOpenTests: () => void;
+}) {
+  const tabMessages: Record<ResponseTab, { title: string; description: string }> = {
+    body: {
+      title: "Todavía no hay cuerpo de respuesta",
+      description:
+        "Mandá la petición o generá una vista previa para validar URL, encabezados y entorno antes de ejecutar."
+    },
+    headers: {
+      title: "Los encabezados van a aparecer acá",
+      description:
+        "Usá la vista previa para revisar la resolución previa y después ejecutá la petición para inspeccionar los encabezados reales."
+    },
+    tests: {
+      title: "Las pruebas viven mejor con contexto",
+      description:
+        "Ejecutá la petición para ver resultados reales o abrí la pestaña de pruebas para preparar una base mínima."
+    }
+  };
+
+  const current = tabMessages[currentTab];
+  const description = hasUrl
+    ? current.description
+    : "Definí una URL o pegá un cURL en la barra superior para empezar a trabajar esta petición.";
+
+  return (
+    <div className="response-empty-state">
+      <div className="card response-empty-primary">
+        <div className="eyebrow">sin respuesta</div>
+        <h3 className="surface-title response-empty-title">
+          {sending ? "Esperando respuesta…" : current.title}
+        </h3>
+        <div className="muted small response-empty-description">{description}</div>
+
+        <div className="header-actions response-empty-actions">
+          <button
+            className="button secondary"
+            disabled={busy || !hasUrl || sending}
+            onClick={onPreview}
+            type="button"
+          >
+            {busy && !sending ? "Procesando…" : "Vista previa"}
+          </button>
+          <button
+            className={`button ${sending ? "danger" : ""}`}
+            disabled={busy && !sending}
+            onClick={sending ? onCancel : onSend}
+            type="button"
+          >
+            {sending ? "Cancelar" : busy ? "Procesando…" : "Enviar"}
+          </button>
+        </div>
+      </div>
+
+      <div className="response-empty-grid">
+        <div className="card response-empty-card">
+          <div className="eyebrow">contexto activo</div>
+          <strong>{environmentName ?? "Sin entorno"}</strong>
+          <span className="muted small">
+            Cambialo desde la barra superior para resolver variables antes de ejecutar.
+          </span>
+        </div>
+
+        <div className="card response-empty-card">
+          <div className="eyebrow">pruebas</div>
+          <strong>{testsCount === 0 ? "Sin pruebas todavía" : `${testsCount} listas`}</strong>
+          <button className="button ghost compact-button" onClick={onOpenTests} type="button">
+            {testsCount === 0 ? "Configurar pruebas" : "Ver pruebas"}
+          </button>
+        </div>
+
+        <div className="card response-empty-card">
+          <div className="eyebrow">atajos</div>
+          <strong>⌘/Ctrl + Enter · Enviar</strong>
+          <span className="muted small">⌘/Ctrl + Shift + P genera una vista previa.</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RequestStatusRail({
+  response,
+  preview,
+  environmentName,
+  collectionName,
+  testsCount,
+  timeoutMs,
+  bodyMode,
+  isDirty,
+  sending
+}: {
+  response: RequestExecutionOutcome["response"] | null;
+  preview: RequestPreview | null;
+  environmentName: string | null;
+  collectionName: string | null;
+  testsCount: number;
+  timeoutMs: number;
+  bodyMode: BodyMode;
+  isDirty: boolean;
+  sending: boolean;
+}) {
+  const tone = sending ? "neutral" : statusTone(response?.status);
+  const toneBorder: Record<typeof tone, string> = {
+    neutral: "rgba(255, 255, 255, 0.06)",
+    ok: "rgba(112, 186, 137, 0.16)",
+    warn: "rgba(116, 153, 220, 0.16)",
+    client: "rgba(231, 176, 92, 0.17)",
+    error: "rgba(205, 101, 123, 0.18)"
+  };
+
+  let statusValue = "Listo para enviar";
+  let statusDetail = isDirty
+    ? "Hay cambios locales pendientes"
+    : "Todo sincronizado localmente";
+
+  if (sending) {
+    statusValue = "Enviando petición";
+    statusDetail = "Esperando respuesta del servidor. Podés cancelar la ejecución actual.";
+  } else if (response) {
+    statusValue = `${response.status} ${response.statusText}`;
+    statusDetail = `Última ejecución ${formatSessionTimestamp(response.receivedAt)}`;
+  } else if (preview) {
+    statusValue = "Vista previa lista";
+    statusDetail = preview.environmentName
+      ? `Resuelto con ${preview.environmentName}`
+      : "Resolución previa disponible para revisar URL y encabezados.";
+  }
+
+  return (
+    <section aria-label="Estado de la petición" className="status-rail">
+      <div
+        className="card status-rail-card status-rail-primary"
+        style={{ borderColor: toneBorder[tone] }}
+      >
+        <div className="eyebrow">estado</div>
+        <strong>{statusValue}</strong>
+        <span className="muted small">{statusDetail}</span>
+      </div>
+
+      <div className="card status-rail-card">
+        <div className="eyebrow">entorno</div>
+        <strong>{environmentName ?? "Sin entorno"}</strong>
+      </div>
+
+      <div className="card status-rail-card">
+        <div className="eyebrow">colección</div>
+        <strong>{collectionName ?? "Borrador"}</strong>
+      </div>
+
+      <div className="card status-rail-card">
+        <div className="eyebrow">{response ? "duración" : "límite"}</div>
+        <strong>{response ? `${response.durationMs} ms` : `${timeoutMs} ms`}</strong>
+      </div>
+
+      <div className="card status-rail-card">
+        <div className="eyebrow">{response ? "tamaño" : "cuerpo"}</div>
+        <strong>{response ? formatBytes(response.sizeBytes) : formatBodyModeLabel(bodyMode)}</strong>
+      </div>
+
+      <div className="card status-rail-card">
+        <div className="eyebrow">pruebas</div>
+        <strong>{testsCount === 0 ? "Sin pruebas" : `${testsCount} listas`}</strong>
+      </div>
+    </section>
   );
 }
 
@@ -1449,9 +1889,9 @@ function RequestPreviewPanel({
     <section className="card preview-card">
       <div className="header-row">
         <div>
-          <h3 className="section-title">Preview</h3>
+          <h3 className="section-title">Vista previa</h3>
           <div className="muted small">
-            Resuelve environment, headers y cURL sin salir del request settings.
+            Resuelve el entorno, los encabezados y el cURL sin salir de la configuración.
           </div>
         </div>
 
@@ -1461,7 +1901,7 @@ function RequestPreviewPanel({
           onClick={onRefresh}
           type="button"
         >
-          {busy ? "Generando..." : preview ? "Regenerar" : "Preview"}
+          {busy ? "Generando…" : preview ? "Regenerar" : "Vista previa"}
         </button>
       </div>
 
@@ -1473,9 +1913,9 @@ function RequestPreviewPanel({
           </div>
 
           <div>
-            <strong>Headers</strong>
+            <strong>Encabezados</strong>
             <ResponseHeadersTable
-              emptyMessage="Sin headers resueltos."
+              emptyMessage="Sin encabezados resueltos."
               rows={preview.headers}
             />
           </div>
@@ -1487,26 +1927,26 @@ function RequestPreviewPanel({
 
           {preview.bodyText ? (
             <div>
-              <strong>Body</strong>
+              <strong>Cuerpo</strong>
               <CodeEditor className="compact-code-editor" language={detectEditorLanguage(preview.bodyText)} minHeight={140} readOnly value={formatBodyText(preview.bodyText)} />
             </div>
           ) : null}
 
           {preview.environmentName ? (
             <div className="muted small">
-              Environment resuelto: {preview.environmentName}
+              Entorno resuelto: {preview.environmentName}
             </div>
           ) : null}
 
           {preview.usedSecretAliases.length > 0 ? (
             <div className="muted small">
-              Usa secrets: {preview.usedSecretAliases.join(", ")}
+              Usa estos secretos: {preview.usedSecretAliases.join(", ")}
             </div>
           ) : null}
 
           {preview.missingSecretAliases.length > 0 ? (
             <div>
-              <strong>Secrets faltantes</strong>
+              <strong>Secretos faltantes</strong>
               <ul className="warning-list">
                 {preview.missingSecretAliases.map((alias) => (
                   <li key={alias}>{alias}</li>
@@ -1517,7 +1957,7 @@ function RequestPreviewPanel({
         </div>
       ) : (
         <div className="empty-surface muted small">
-          Tocá <strong>Preview</strong> para ver el request resuelto.
+          Tocá <strong>Vista previa</strong> para ver la petición resuelta.
         </div>
       )}
     </section>
@@ -1555,9 +1995,9 @@ function RequestExportPanel({
     <section className="card preview-card">
       <div className="header-row interop-header-row">
         <div>
-          <h3 className="section-title">Export code</h3>
+          <h3 className="section-title">Exportar código</h3>
           <div className="muted small">
-            Copiá el request actual como cURL, fetch o axios con variables ya resueltas.
+            Copiá la petición actual como cURL, fetch o axios con variables ya resueltas.
           </div>
         </div>
 
@@ -1615,7 +2055,7 @@ function RequestExportPanel({
         </div>
       ) : (
         <div className="empty-surface muted small">
-          Generá <strong>Preview</strong> primero para exportar el request resuelto.
+          Generá <strong>Vista previa</strong> primero para exportar la petición resuelta.
         </div>
       )}
     </section>
@@ -1672,7 +2112,7 @@ function CollectionsTree({
                   onClick={() => onOpenRunner(item.collection.id)}
                   type="button"
                 >
-                  Run
+                  Ejecutar
                 </button>
               ) : null}
             </div>
@@ -1680,7 +2120,7 @@ function CollectionsTree({
             {selectedCollection ? (
               <div className="tree-children">
                 {item.requests.length === 0 ? (
-                  <div className="tree-empty muted small">Sin requests guardados.</div>
+                  <div className="tree-empty muted small">Sin peticiones guardadas.</div>
                 ) : null}
 
                 {item.requests.map((record) => {
@@ -1879,7 +2319,7 @@ function requestTabLabel(tab: OpenRequestTab): string {
     return tab.draft.url.trim();
   }
 
-  return "Nuevo request";
+  return "Nueva petición";
 }
 
 function isPlaceholderRequestTab(tab: OpenRequestTab): boolean {
@@ -1888,7 +2328,7 @@ function isPlaceholderRequestTab(tab: OpenRequestTab): boolean {
     !tab.originRequestId &&
     tab.draft.method === "GET" &&
     tab.draft.url.trim().length === 0 &&
-    tab.draft.name.trim() === "Nuevo request" &&
+    tab.draft.name.trim() === "Nueva petición" &&
     tab.draft.query.length === 0 &&
     tab.draft.headers.length === 0 &&
     tab.draft.auth.type === "none" &&
@@ -2245,12 +2685,12 @@ function buildRequestNameFromUrl(method: HttpMethod, rawUrl: string): string {
   const trimmed = rawUrl.trim();
 
   if (!trimmed) {
-    return "Nuevo request";
+    return "Nueva petición";
   }
 
   const withoutQuery = trimmed.split("?")[0] ?? trimmed;
   const segments = withoutQuery.split("/").filter(Boolean);
-  const lastSegment = segments[segments.length - 1] ?? "request";
+  const lastSegment = segments[segments.length - 1] ?? "peticion";
   return `${method} ${lastSegment}`;
 }
 
@@ -2559,7 +2999,7 @@ function parseCurlCommandToDraft(command: string): {
     const parsedHeader = parseCurlHeader(headerToken);
 
     if (!parsedHeader) {
-      warnings.push(`Header ignorado: ${headerToken}`);
+      warnings.push(`Encabezado ignorado: ${headerToken}`);
       continue;
     }
 
@@ -2696,7 +3136,7 @@ function RequestWorkspaceTabsStrip({
   };
 
   return (
-    <div className="request-workspace-tabs" role="tablist" aria-label="Requests abiertos">
+    <div className="request-workspace-tabs" role="tablist" aria-label="Peticiones abiertas">
       <div className="request-workspace-tabs-scroll">
         {tabs.map((tab) => {
           const active = tab.key === activeKey;
@@ -2778,7 +3218,7 @@ function RequestWorkspaceTabsStrip({
       </div>
 
       <button
-        aria-label="Nuevo request"
+        aria-label="Nueva petición"
         className="icon-button request-workspace-add"
         onClick={onNewRequest}
         type="button"
@@ -2827,7 +3267,7 @@ function CommandPalette({
   return (
     <div className="command-palette-overlay" onClick={onClose} role="presentation">
       <div
-        aria-label="Command palette"
+        aria-label="Paleta de comandos"
         aria-modal="true"
         className="command-palette"
         onClick={(event) => event.stopPropagation()}
@@ -2843,7 +3283,7 @@ function CommandPalette({
                 onClose();
               }
             }}
-            placeholder="Buscar requests, colecciones o acciones…"
+            placeholder="Buscar peticiones, colecciones o acciones…"
             ref={inputRef}
             value={query}
           />
@@ -3002,6 +3442,12 @@ export default function App() {
 
   const response = activeTab?.executionOutcome?.response ?? null;
   const busyNow = busy !== null;
+  const collectionCount = snapshot?.collections.length ?? 0;
+  const totalRequestCount = (snapshot?.collections ?? []).reduce(
+    (total, item) => total + item.requests.length,
+    0
+  );
+  const environmentCount = snapshot?.environments.length ?? 0;
   const hasUnsavedChanges = useMemo(
     () => requestTabs.some((tab) => tab.isDirty),
     [requestTabs]
@@ -3011,50 +3457,50 @@ export default function App() {
     const items: CommandPaletteItem[] = [
       {
         id: "action:new-request",
-        title: "Nuevo request",
-        subtitle: "Abrir un tab vacío",
+        title: "Nueva petición",
+        subtitle: "Abrir una pestaña vacía",
         section: "Acción",
         keywords: ["new", "request", "crear"]
       },
       {
         id: "action:save-request",
-        title: "Guardar request",
+        title: "Guardar petición",
         subtitle: activeCollection?.collection.name ?? "Guardar en la colección actual",
         section: "Acción",
         keywords: ["save", "guardar", "request"]
       },
       {
         id: "action:send-request",
-        title: activeExecutionId ? "Cancelar request en curso" : "Enviar request",
-        subtitle: activeExecutionId ? "Cancela la ejecución actual" : "Ejecutar el request activo",
+        title: activeExecutionId ? "Cancelar petición en curso" : "Enviar petición",
+        subtitle: activeExecutionId ? "Cancela la ejecución actual" : "Ejecutar la petición activa",
         section: "Acción",
         keywords: activeExecutionId ? ["cancel", "stop"] : ["send", "run", "execute"]
       },
       {
         id: "action:workspace",
-        title: "Abrir workspace",
-        subtitle: "Environments, data, history y diagnostics",
+        title: "Abrir panel",
+        subtitle: "Entornos, datos, historial y diagnósticos",
         section: "Acción",
         keywords: ["workspace", "tools", "settings"]
       },
       {
         id: "action:copy-curl",
         title: "Copiar cURL",
-        subtitle: "Exportar el request activo como cURL",
+        subtitle: "Exportar la petición activa como cURL",
         section: "Acción",
         keywords: ["curl", "export", "copy"]
       },
       {
         id: "action:copy-fetch",
         title: "Copiar fetch",
-        subtitle: "Exportar el request activo como fetch",
+        subtitle: "Exportar la petición activa como fetch",
         section: "Acción",
         keywords: ["fetch", "export", "copy"]
       },
       {
         id: "action:copy-axios",
         title: "Copiar axios",
-        subtitle: "Exportar el request activo como axios",
+        subtitle: "Exportar la petición activa como axios",
         section: "Acción",
         keywords: ["axios", "export", "copy"]
       }
@@ -3064,7 +3510,7 @@ export default function App() {
       items.push({
         id: `collection:${collection.collection.id}`,
         title: collection.collection.name,
-        subtitle: `${collection.requests.length} requests`,
+        subtitle: `${collection.requests.length} peticiones`,
         section: "Colección",
         keywords: ["collection", collection.collection.name]
       });
@@ -3074,7 +3520,7 @@ export default function App() {
           id: `request:${request.id}`,
           title: request.name,
           subtitle: `${request.draft.method} ${request.draft.url}`,
-          section: "Request",
+          section: "Petición",
           keywords: [
             request.draft.method,
             request.name,
@@ -3620,7 +4066,7 @@ export default function App() {
       await copyTextToClipboard(snippet);
       setRequestExportFormat(preferredFormat);
       setError(null);
-      setSuccess(`${requestCodeExportLabel(preferredFormat)} copiado al clipboard.`);
+      setSuccess(`${requestCodeExportLabel(preferredFormat)} copiado al portapapeles.`);
     } catch (err) {
       setError(normalizeError(err));
     }
@@ -3853,7 +4299,7 @@ export default function App() {
 
     try {
       await saveSecret({ alias, value });
-      setSuccess("Secret guardado.");
+      setSuccess("Secreto guardado.");
       await refreshWorkspace();
     } catch (err) {
       setError(normalizeError(err));
@@ -3869,7 +4315,7 @@ export default function App() {
 
     try {
       await deleteSecret(alias);
-      setSuccess("Secret borrado.");
+      setSuccess("Secreto eliminado.");
       await refreshWorkspace();
     } catch (err) {
       setError(normalizeError(err));
@@ -3880,7 +4326,7 @@ export default function App() {
 
   const handleRunCollection = async () => {
     if (!selectedCollectionId) {
-      setError("Seleccioná una colección para correr el runner.");
+      setError("Seleccioná una colección para ejecutar la colección.");
       return;
     }
 
@@ -3971,7 +4417,7 @@ export default function App() {
       }
 
       setSuccess(
-        `Import listo: ${result.collectionsImported} collections, ${result.requestsImported} requests.`
+        `Importación lista: ${result.collectionsImported} colecciones, ${result.requestsImported} peticiones.`
       );
       await refreshWorkspace();
     } catch (err) {
@@ -3997,14 +4443,14 @@ export default function App() {
         format: importFormat,
         merge: importMerge,
         collectionNameOverride: null,
-        sourceLabel: "payload pegado"
+        sourceLabel: "contenido pegado"
       });
       setLastImportResult(result);
       if (result.collectionIds.length > 0) {
         setSelectedCollectionId(result.collectionIds[0]);
       }
       setSuccess(
-        `Payload importado: ${result.collectionsImported} collections, ${result.requestsImported} requests.`
+        `Contenido importado: ${result.collectionsImported} colecciones, ${result.requestsImported} peticiones.`
       );
       await refreshWorkspace();
     } catch (err) {
@@ -4021,7 +4467,7 @@ export default function App() {
 
     try {
       await cancelRequest(activeExecutionId);
-      setSuccess("Request cancelado.");
+      setSuccess("Petición cancelada.");
     } catch (err) {
       setError(normalizeError(err));
     } finally {
@@ -4075,10 +4521,8 @@ export default function App() {
     setError(null);
     setSuccess(
       warnings.length > 0
-        ? `cURL importado. Se ignoraron ${warnings.length} flag${
-            warnings.length === 1 ? "" : "s"
-          } avanzados.`
-        : "cURL importado. Método, URL, headers y body inferidos."
+        ? `cURL importado. Se ${warnings.length === 1 ? "ignoró" : "ignoraron"} ${warnings.length} ${warnings.length === 1 ? "opción avanzada" : "opciones avanzadas"}.`
+        : "cURL importado. Método, URL, encabezados y cuerpo inferidos."
     );
   };
 
@@ -4363,8 +4807,35 @@ export default function App() {
         }
       >
         <aside className="sidebar">
+          <div className="sidebar-hero">
+            <div className="sidebar-hero-top">
+              <div className="sidebar-hero-badge">Midway</div>
+              <div className="sidebar-hero-caption">espacio API</div>
+            </div>
+            <div className="sidebar-hero-copy">
+              <strong>Una biblioteca más calmada para tus peticiones</strong>
+              <span className="muted small">
+                Explorá colecciones, retomá borradores y corré lotes sin salir del foco.
+              </span>
+            </div>
+            <div className="sidebar-hero-stats" aria-label="Resumen del espacio de trabajo">
+              <div className="sidebar-hero-stat">
+                <span>Colecciones</span>
+                <strong>{collectionCount}</strong>
+              </div>
+              <div className="sidebar-hero-stat">
+                <span>Peticiones</span>
+                <strong>{totalRequestCount}</strong>
+              </div>
+              <div className="sidebar-hero-stat">
+                <span>Entornos</span>
+                <strong>{environmentCount}</strong>
+              </div>
+            </div>
+          </div>
+
           <div className="sidebar-header">
-            <h1 className="sidebar-title">Colecciones</h1>
+            <h1 className="sidebar-title">Biblioteca</h1>
             <button
               aria-label="Nueva colección"
               className="icon-button"
@@ -4385,7 +4856,7 @@ export default function App() {
                 <input
                   className="input"
                   onChange={(event) => setNewCollectionName(event.target.value)}
-                  placeholder="Payments"
+                  placeholder="Pagos"
                   value={newCollectionName}
                 />
               </label>
@@ -4449,11 +4920,11 @@ export default function App() {
           <section className="request-shell">
             <div className="panel-header">
               <div className="panel-context">
-                <div className="eyebrow">request</div>
+                <div className="eyebrow">petición</div>
                 <div className="context-line">
                   <span>{activeCollection?.collection.name ?? "Sin colección"}</span>
                   <span className="context-divider">·</span>
-                  <span>{activeTab.originRequestId ? "Guardado" : "Borrador"}</span>
+                  <span>{activeTab.originRequestId ? "Guardada" : "Borrador"}</span>
                   <span className="context-divider">·</span>
                   <span className="context-emphasis">{activeTab.draft.name}</span>
                 </div>
@@ -4462,8 +4933,8 @@ export default function App() {
                   <span className="context-divider">·</span>
                   <span>
                     {lastAutosavedAt
-                      ? `Autosave ${formatSessionTimestamp(lastAutosavedAt)}`
-                      : "Autosave local activo"}
+                      ? `Autoguardado ${formatSessionTimestamp(lastAutosavedAt)}`
+                      : "Autoguardado local activo"}
                   </span>
                 </div>
               </div>
@@ -4475,7 +4946,7 @@ export default function App() {
                   onClick={handleNewRequest}
                   type="button"
                 >
-                  Nuevo request
+                  Nueva petición
                 </button>
                 <button
                   className="button secondary compact-button"
@@ -4490,7 +4961,7 @@ export default function App() {
                   onClick={() => openWorkspace()}
                   type="button"
                 >
-                  Tools
+                  Panel
                 </button>
               </div>
             </div>
@@ -4552,7 +5023,7 @@ export default function App() {
                 }
                 value={activeTab.draft.environmentId ?? ""}
               >
-                <option value="">Env</option>
+                <option value="">Entorno</option>
                 {(snapshot?.environments ?? []).map((env) => (
                   <option key={env.id} value={env.id}>
                     {env.name}
@@ -4561,7 +5032,7 @@ export default function App() {
               </select>
 
               <button
-                aria-label="Configuración del request"
+                aria-label="Configuración de la petición"
                 className={`icon-button ${activeTab.showSettings ? "active" : ""}`}
                 onClick={() =>
                   updateActiveRequestTab((tab) => ({
@@ -4580,9 +5051,21 @@ export default function App() {
                 onClick={() => void (activeExecutionId ? handleCancelActiveRequest() : handleSend())}
                 type="button"
               >
-                {activeExecutionId ? "Cancel" : busy === "send" ? "Sending..." : "Send"}
+                {activeExecutionId ? "Cancelar" : busy === "send" ? "Enviando…" : "Enviar"}
               </button>
             </div>
+
+            <RequestStatusRail
+              bodyMode={activeTab.draft.body.mode}
+              collectionName={activeCollection?.collection.name ?? null}
+              environmentName={activeEnvironment?.name ?? activeTab.preview?.environmentName ?? null}
+              isDirty={activeTab.isDirty}
+              preview={activeTab.preview}
+              response={response}
+              sending={Boolean(activeExecutionId)}
+              testsCount={activeTab.draft.responseTests.length}
+              timeoutMs={activeTab.draft.timeoutMs}
+            />
 
             {activeTab.showSettings ? (
               <section className="inline-popover request-settings-panel">
@@ -4603,7 +5086,7 @@ export default function App() {
                   </label>
 
                   <label className="label">
-                    <span>Timeout (ms)</span>
+                    <span>Tiempo límite (ms)</span>
                     <input
                       className="input"
                       min={1}
@@ -4630,16 +5113,16 @@ export default function App() {
                     </span>
                     <span>
                       {activeEnvironment
-                        ? `Environment activo: ${activeEnvironment.name}`
-                        : "Sin environment activo"}
+                        ? `Entorno activo: ${activeEnvironment.name}`
+                        : "Sin entorno activo"}
                     </span>
                     <span>
                       {lastAutosavedAt
-                        ? `Autosave local: ${formatSessionTimestamp(lastAutosavedAt)}`
-                        : "Autosave local activo"}
+                        ? `Autoguardado local: ${formatSessionTimestamp(lastAutosavedAt)}`
+                        : "Autoguardado local activo"}
                     </span>
                     <span>Pegá un cURL completo en la URL para importarlo.</span>
-                    <span>⌘/Ctrl+Shift+P preview</span>
+                    <span>⌘/Ctrl + Shift + P · vista previa</span>
                   </div>
                 </div>
 
@@ -4666,7 +5149,7 @@ export default function App() {
             <div className="tabs request-tabs">
               <TabButton
                 active={activeTab.requestTab === "params"}
-                label="Params"
+                label="Parámetros"
                 meta={activeTab.draft.query.length}
                 onClick={() =>
                   updateActiveRequestTab((tab) => ({
@@ -4677,7 +5160,7 @@ export default function App() {
               />
               <TabButton
                 active={activeTab.requestTab === "headers"}
-                label="Headers"
+                label="Encabezados"
                 meta={activeTab.draft.headers.length}
                 onClick={() =>
                   updateActiveRequestTab((tab) => ({
@@ -4688,8 +5171,8 @@ export default function App() {
               />
               <TabButton
                 active={activeTab.requestTab === "auth"}
-                label="Auth"
-                meta={activeTab.draft.auth.type}
+                label="Autorización"
+                meta={formatAuthTypeLabel(activeTab.draft.auth.type)}
                 onClick={() =>
                   updateActiveRequestTab((tab) => ({
                     ...tab,
@@ -4699,8 +5182,8 @@ export default function App() {
               />
               <TabButton
                 active={activeTab.requestTab === "body"}
-                label="Body"
-                meta={activeTab.draft.body.mode}
+                label="Cuerpo"
+                meta={formatBodyModeLabel(activeTab.draft.body.mode)}
                 onClick={() =>
                   updateActiveRequestTab((tab) => ({
                     ...tab,
@@ -4710,7 +5193,7 @@ export default function App() {
               />
               <TabButton
                 active={activeTab.requestTab === "tests"}
-                label="Tests"
+                label="Pruebas"
                 meta={activeTab.draft.responseTests.length}
                 onClick={() =>
                   updateActiveRequestTab((tab) => ({
@@ -4732,7 +5215,7 @@ export default function App() {
                     }))
                   }
                   rows={activeTab.draft.query}
-                  title="Query params"
+                  title="Parámetros de consulta"
                 />
               ) : null}
 
@@ -4746,7 +5229,7 @@ export default function App() {
                     }))
                   }
                   rows={activeTab.draft.headers}
-                  title="Headers"
+                  title="Encabezados"
                 />
               ) : null}
 
@@ -4766,7 +5249,7 @@ export default function App() {
               {activeTab.requestTab === "body" ? (
                 <section className="card">
                   <div className="header-row">
-                    <h3 className="section-title">Body</h3>
+                    <h3 className="section-title">Cuerpo</h3>
                     <div className="header-actions align-right">
                       {activeTab.draft.body.mode === "json" ? (
                         <button
@@ -4786,7 +5269,7 @@ export default function App() {
                           }
                           type="button"
                         >
-                          Format JSON
+                          Formatear JSON
                         </button>
                       ) : null}
                       <select
@@ -4808,7 +5291,7 @@ export default function App() {
                       >
                         {BODY_MODES.map((mode) => (
                           <option key={mode} value={mode}>
-                            {mode}
+                            {formatBodyModeLabel(mode)}
                           </option>
                         ))}
                       </select>
@@ -4818,7 +5301,7 @@ export default function App() {
                   {activeTab.draft.body.mode === "json" || activeTab.draft.body.mode === "text" ? (
                     <div className="stack small-gap">
                       <div className="muted small">
-                        Editor CodeMirror con resaltado, búsqueda y lint JSON en vivo.
+                        Editor CodeMirror con resaltado, búsqueda y validación JSON en vivo.
                       </div>
                       <CodeEditor
                         language={activeTab.draft.body.mode === "json" ? "json" : "text"}
@@ -4838,7 +5321,7 @@ export default function App() {
                             ? `{
   "hello": "world"
 }`
-                            : "Body del request"
+                            : "Cuerpo de la petición"
                         }
                         value={activeTab.draft.body.value}
                       />
@@ -4863,7 +5346,7 @@ export default function App() {
 
                   {activeTab.draft.body.mode === "none" ? (
                     <div className="empty-surface muted small">
-                      Sin body para este request.
+                      Sin cuerpo para esta petición.
                     </div>
                   ) : null}
                 </section>
@@ -4887,15 +5370,15 @@ export default function App() {
           {recoveryNotice ? (
             <div className="info-banner banner-with-actions">
               <span>
-                Recuperamos tus tabs y drafts locales después de un cierre inesperado.
-                Último autosave: <strong>{formatSessionTimestamp(recoveryNotice)}</strong>.
+                Recuperamos tus pestañas y borradores locales después de un cierre inesperado.
+                Último autoguardado: <strong>{formatSessionTimestamp(recoveryNotice)}</strong>.
               </span>
               <button
                 className="button ghost compact-button"
                 onClick={() => setRecoveryNotice(null)}
                 type="button"
               >
-                Ok
+                Cerrar
               </button>
             </div>
           ) : null}
@@ -4917,13 +5400,13 @@ export default function App() {
         <section className="response-shell">
           <div className="panel-header">
             <div className="panel-context">
-              <div className="eyebrow">response</div>
+              <div className="eyebrow">respuesta</div>
 
               <div className="response-status-row">
                 <span className={`status-pill ${statusTone(response?.status)}`}>
                   {response
                     ? `${response.status} ${response.statusText}`
-                    : "No response"}
+                    : "Sin respuesta"}
                 </span>
                 {response ? (
                   <>
@@ -4948,7 +5431,7 @@ export default function App() {
           <div className="tabs tabs-inline response-tabs">
             <TabButton
               active={activeTab.responseTab === "body"}
-              label="Body"
+              label="Cuerpo"
               onClick={() =>
                 updateActiveRequestTab((tab) => ({
                   ...tab,
@@ -4958,7 +5441,7 @@ export default function App() {
             />
             <TabButton
               active={activeTab.responseTab === "headers"}
-              label="Headers"
+              label="Encabezados"
               meta={response?.headers.length ?? 0}
               onClick={() =>
                 updateActiveRequestTab((tab) => ({
@@ -4969,7 +5452,7 @@ export default function App() {
             />
             <TabButton
               active={activeTab.responseTab === "tests"}
-              label="Tests"
+              label="Pruebas"
               meta={activeTab.executionOutcome?.assertionReport.total ?? 0}
               onClick={() =>
                 updateActiveRequestTab((tab) => ({
@@ -4985,35 +5468,59 @@ export default function App() {
               <div className="response-url">{response.finalUrl}</div>
               <div>{response.receivedAt}</div>
             </div>
-          ) : (
-            <div className="empty-surface muted small">
-              Todavía no hay response. Tocá <strong>Send</strong> o usá ⌘/Ctrl+Enter.
-            </div>
-          )}
+          ) : null}
 
-          <div className="tab-panel response-panel-body">
-            {activeTab.responseTab === "body" ? (
-              <CodeEditor
-                className="response-code-editor"
-                language={detectEditorLanguage(response?.bodyText ?? "")}
-                minHeight={420}
-                readOnly
-                value={response ? formatBodyText(response.bodyText) : "(sin body)"}
+          <div className={`tab-panel response-panel-body ${response ? "" : "empty"}`.trim()}>
+            {response ? (
+              <>
+                {activeTab.responseTab === "body" ? (
+                  <CodeEditor
+                    className="response-code-editor"
+                    language={detectEditorLanguage(response.bodyText)}
+                    minHeight={420}
+                    readOnly
+                    value={formatBodyText(response.bodyText)}
+                  />
+                ) : null}
+
+                {activeTab.responseTab === "headers" ? (
+                  <ResponseHeadersTable rows={response.headers} />
+                ) : null}
+
+                {activeTab.responseTab === "tests" ? (
+                  <section className="card">
+                    <AssertionReportView
+                      emptyMessage="No hay pruebas evaluadas todavía."
+                      report={activeTab.executionOutcome?.assertionReport ?? null}
+                    />
+                  </section>
+                ) : null}
+              </>
+            ) : (
+              <ResponseEmptyState
+                busy={busyNow}
+                currentTab={activeTab.responseTab}
+                environmentName={activeEnvironment?.name ?? activeTab.preview?.environmentName ?? null}
+                hasUrl={activeTab.draft.url.trim().length > 0}
+                onCancel={() => {
+                  void handleCancelActiveRequest();
+                }}
+                onOpenTests={() =>
+                  updateActiveRequestTab((tab) => ({
+                    ...tab,
+                    requestTab: "tests"
+                  }))
+                }
+                onPreview={() => {
+                  void handlePreview();
+                }}
+                onSend={() => {
+                  void handleSend();
+                }}
+                sending={Boolean(activeExecutionId)}
+                testsCount={activeTab.draft.responseTests.length}
               />
-            ) : null}
-
-            {activeTab.responseTab === "headers" ? (
-              <ResponseHeadersTable rows={response?.headers ?? []} />
-            ) : null}
-
-            {activeTab.responseTab === "tests" ? (
-              <section className="card">
-                <AssertionReportView
-                  emptyMessage="No hay tests evaluados todavía."
-                  report={activeTab.executionOutcome?.assertionReport ?? null}
-                />
-              </section>
-            ) : null}
+            )}
           </div>
         </section>
       </div>
@@ -5028,10 +5535,10 @@ export default function App() {
         <div className="drawer-header">
           <div>
             <div className="eyebrow">
-              {sidePanel === "runner" ? "collection" : "workspace"}
+              {sidePanel === "runner" ? "colección" : "panel"}
             </div>
             <h2 className="surface-title">
-              {sidePanel === "runner" ? "Collection runner" : "Workspace"}
+              {sidePanel === "runner" ? "Ejecución de colección" : "Espacio de trabajo"}
             </h2>
           </div>
 
@@ -5050,18 +5557,18 @@ export default function App() {
             <div className="tabs tabs-inline">
               <TabButton
                 active={workspaceTab === "environments"}
-                label="Environments"
+                label="Entornos"
                 meta={snapshot?.environments.length ?? 0}
                 onClick={() => setWorkspaceTab("environments")}
               />
               <TabButton
                 active={workspaceTab === "data"}
-                label="Data"
+                label="Datos"
                 onClick={() => setWorkspaceTab("data")}
               />
               <TabButton
                 active={workspaceTab === "history"}
-                label="History"
+                label="Historial"
                 meta={snapshot?.history.length ?? 0}
                 onClick={() => setWorkspaceTab("history")}
               />
@@ -5111,12 +5618,12 @@ export default function App() {
                   <div className="tabs tabs-inline data-subtabs">
                     <TabButton
                       active={dataTab === "export"}
-                      label="Export"
+                      label="Exportar"
                       onClick={() => setDataTab("export")}
                     />
                     <TabButton
                       active={dataTab === "import"}
-                      label="Import"
+                      label="Importar"
                       onClick={() => setDataTab("import")}
                     />
                   </div>
@@ -5124,17 +5631,17 @@ export default function App() {
                   {dataTab === "export" ? (
                     <div className="stack">
                       <label className="label">
-                        <span>Export path</span>
+                        <span>Ruta de exportación</span>
                         <input
                           className="input"
                           onChange={(event) => setExportPath(event.target.value)}
-                          placeholder="/ruta/absoluta/workspace.json"
+                          placeholder="/ruta/absoluta/espacio-trabajo.json"
                           value={exportPath}
                         />
                       </label>
 
                       <label className="label">
-                        <span>Formato export</span>
+                        <span>Formato de exportación</span>
                         <select
                           className="select"
                           onChange={(event) =>
@@ -5142,7 +5649,7 @@ export default function App() {
                           }
                           value={exportFormat}
                         >
-                          <option value="nativeWorkspaceV1">native workspace v1</option>
+                          <option value="nativeWorkspaceV1">Midway nativo v1</option>
                           <option value="postmanCollectionV21">Postman v2.1</option>
                         </select>
                       </label>
@@ -5158,7 +5665,7 @@ export default function App() {
                               }
                               value={exportScope}
                             >
-                              <option value="workspace">workspace completo</option>
+                              <option value="workspace">espacio completo</option>
                               <option value="collection">colección seleccionada</option>
                             </select>
                           </label>
@@ -5172,11 +5679,11 @@ export default function App() {
                                 }
                                 type="checkbox"
                               />
-                              incluir history
+                              incluir historial
                             </label>
                           ) : (
                             <div className="muted small">
-                              El bundle nativo de colección exporta solo la colección elegida y los environments/secrets relacionados.
+                              El paquete nativo de colección exporta solo la colección elegida y los entornos y secretos relacionados.
                             </div>
                           )}
 
@@ -5188,7 +5695,7 @@ export default function App() {
                               }
                               type="checkbox"
                             />
-                            incluir aliases de secret
+                            incluir alias de secretos
                           </label>
                         </>
                       ) : (
@@ -5206,8 +5713,8 @@ export default function App() {
                             : exportScope === "collection"
                               ? selectedCollection
                                 ? `Bundle nativo listo para reimportar: ${selectedCollection.collection.name}`
-                                : "Seleccioná una colección para exportar Midway collection."
-                              : "Export completo del workspace."}
+                                : "Seleccioná una colección para exportar una colección de Midway."
+                              : "Exportación completa del espacio de trabajo."}
                         </div>
                         <div className="header-actions">
                           <button
@@ -5216,7 +5723,7 @@ export default function App() {
                             onClick={() => void handleExportWorkspace()}
                             type="button"
                           >
-                            {busy === "interop" ? "Procesando..." : "Exportar"}
+                            {busy === "interop" ? "Procesando…" : "Exportar"}
                           </button>
                         </div>
                       </div>
@@ -5227,8 +5734,8 @@ export default function App() {
                           {"\n"}
                           {lastExportResult.path}
                           {"\n"}
-                          {lastExportResult.collectionsExported} collections · {" "}
-                          {lastExportResult.requestsExported} requests
+                          {lastExportResult.collectionsExported} colecciones · {" "}
+                          {lastExportResult.requestsExported} peticiones
                           {"\n"}
                           {lastExportResult.bytesWritten} bytes
                         </div>
@@ -5239,7 +5746,7 @@ export default function App() {
                   {dataTab === "import" ? (
                     <div className="stack">
                       <label className="label">
-                        <span>Import path</span>
+                        <span>Ruta de importación</span>
                         <input
                           className="input"
                           onChange={(event) => setImportPath(event.target.value)}
@@ -5249,7 +5756,7 @@ export default function App() {
                       </label>
 
                       <label className="label">
-                        <span>Formato import</span>
+                        <span>Formato de importación</span>
                         <select
                           className="select"
                           onChange={(event) =>
@@ -5257,8 +5764,8 @@ export default function App() {
                           }
                           value={importFormat}
                         >
-                          <option value="auto">auto</option>
-                          <option value="nativeWorkspaceV1">native workspace v1</option>
+                          <option value="auto">automático</option>
+                          <option value="nativeWorkspaceV1">Midway nativo v1</option>
                           <option value="postmanCollectionV21">Postman v2.1</option>
                           <option value="openApiV3">OpenAPI v3</option>
                         </select>
@@ -5270,7 +5777,7 @@ export default function App() {
                           onChange={(event) => setImportMerge(event.target.checked)}
                           type="checkbox"
                         />
-                        merge con workspace actual
+                        combinar con el espacio actual
                       </label>
 
                       <div className="section-footer">
@@ -5284,7 +5791,7 @@ export default function App() {
                             onClick={() => void handleImportWorkspace()}
                             type="button"
                           >
-                            {busy === "interop" ? "Procesando..." : "Importar archivo"}
+                            {busy === "interop" ? "Procesando…" : "Importar archivo"}
                           </button>
                         </div>
                       </div>
@@ -5292,9 +5799,9 @@ export default function App() {
                       <section className="card stack compact-card">
                         <div className="header-row">
                           <div>
-                            <h3 className="section-title">Pegar payload</h3>
+                            <h3 className="section-title">Pegar contenido</h3>
                             <div className="muted small">
-                              Pegá una colección Postman o un spec OpenAPI en JSON o YAML.
+                              Pegá una colección Postman o una especificación OpenAPI en JSON o YAML.
                             </div>
                           </div>
                           <button
@@ -5303,7 +5810,7 @@ export default function App() {
                             onClick={() => void handleImportPayload()}
                             type="button"
                           >
-                            {busy === "interop" ? "Procesando..." : "Importar payload"}
+                            {busy === "interop" ? "Procesando…" : "Importar contenido"}
                           </button>
                         </div>
 
@@ -5325,9 +5832,9 @@ info:
                             {"\n"}
                             {lastImportResult.path}
                             {"\n"}
-                            {lastImportResult.collectionsImported} collections · {" "}
-                            {lastImportResult.requestsImported} requests · {" "}
-                            {lastImportResult.environmentsImported} envs
+                            {lastImportResult.collectionsImported} colecciones · {" "}
+                            {lastImportResult.requestsImported} peticiones · {" "}
+                            {lastImportResult.environmentsImported} entornos
                           </div>
 
                           {lastImportResult.warnings.length > 0 ? (
@@ -5351,9 +5858,9 @@ info:
                   <section className="card stack">
                     <div className="header-row">
                       <div>
-                        <h3 className="section-title">Diagnostics</h3>
+                        <h3 className="section-title">Diagnósticos</h3>
                         <div className="muted small">
-                          Logs locales de crashes/unhandled errors para soporte y QA.
+                          Logs locales de cierres inesperados y errores no controlados para soporte y QA.
                         </div>
                       </div>
                       <button
@@ -5371,7 +5878,7 @@ info:
 
                     {crashRecords.length === 0 ? (
                       <div className="empty-surface muted small">
-                        No hay crashes registrados en esta sesión/local storage.
+                        No hay cierres inesperados registrados en esta sesión/almacenamiento local.
                       </div>
                     ) : (
                       <div className="rows-grid diagnostics-grid">
@@ -5402,7 +5909,7 @@ info:
               <section className="card shortcuts-card">
                 <div className="header-row">
                   <div>
-                    <h3 className="section-title">Shortcuts</h3>
+                    <h3 className="section-title">Atajos</h3>
                     <div className="muted small">
                       Microinteracciones para navegar más rápido.
                     </div>
@@ -5411,7 +5918,7 @@ info:
 
                 <div className="shortcut-grid">
                   <div className="shortcut-row">
-                    <span>Send</span>
+                    <span>Enviar</span>
                     <kbd>⌘/Ctrl + Enter</kbd>
                   </div>
                   <div className="shortcut-row">
@@ -5419,32 +5926,32 @@ info:
                     <kbd>⌘/Ctrl + S</kbd>
                   </div>
                   <div className="shortcut-row">
-                    <span>Nuevo request</span>
+                    <span>Nueva petición</span>
                     <kbd>⌘/Ctrl + Shift + N</kbd>
                   </div>
                   <div className="shortcut-row">
-                    <span>Cerrar tab</span>
+                    <span>Cerrar pestaña</span>
                     <kbd>⌘/Ctrl + W</kbd>
                   </div>
                   <div className="shortcut-row">
-                    <span>Reabrir tab</span>
+                    <span>Reabrir pestaña</span>
                     <kbd>⌘/Ctrl + Shift + T</kbd>
                   </div>
                   <div className="shortcut-row">
-                    <span>Preview</span>
+                    <span>Vista previa</span>
                     <kbd>⌘/Ctrl + Shift + P</kbd>
                   </div>
                   <div className="shortcut-row">
-                    <span>Tools</span>
+                    <span>Panel</span>
                     <kbd>⌘/Ctrl + .</kbd>
                   </div>
                   <div className="shortcut-row">
-                    <span>Ir a tab</span>
+                    <span>Ir a pestaña</span>
                     <kbd>Alt + 1..9</kbd>
                   </div>
                   <div className="shortcut-row">
                     <span>Reordenar tabs</span>
-                    <kbd>Drag &amp; Drop</kbd>
+                    <kbd>Arrastrar y soltar</kbd>
                   </div>
                 </div>
               </section>
@@ -5458,7 +5965,7 @@ info:
               <section className="card">
                 <div className="header-row">
                   <div>
-                    <h3 className="section-title">Runner</h3>
+                    <h3 className="section-title">Ejecución</h3>
                     <div className="muted small">
                       {selectedCollection
                         ? selectedCollection.collection.name
@@ -5472,13 +5979,13 @@ info:
                     onClick={() => void handleRunCollection()}
                     type="button"
                   >
-                    {busy === "runCollection" ? "Corriendo..." : "Run"}
+                    {busy === "runCollection" ? "Ejecutando…" : "Ejecutar"}
                   </button>
                 </div>
 
                 <div className="grid-2">
                   <label className="label">
-                    <span>Environment override</span>
+                    <span>Forzar entorno</span>
                     <select
                       className="select"
                       onChange={(event) =>
@@ -5486,7 +5993,7 @@ info:
                       }
                       value={runnerEnvironmentOverrideId ?? ""}
                     >
-                      <option value="">usar el de cada request</option>
+                      <option value="">usar el de cada petición</option>
                       {(snapshot?.environments ?? []).map((env) => (
                         <option key={env.id} value={env.id}>
                           {env.name}
@@ -5501,7 +6008,7 @@ info:
                       onChange={(event) => setStopOnError(event.target.checked)}
                       type="checkbox"
                     />
-                    cortar al primer error
+                    detener al primer error
                   </label>
                 </div>
               </section>

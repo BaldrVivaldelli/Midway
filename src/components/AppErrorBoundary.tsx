@@ -41,10 +41,10 @@ export default class AppErrorBoundary extends Component<Props, State> {
       <div className="fatal-shell">
         <div className="fatal-card">
           <span className="pill subtle">Midway</span>
-          <h1>La app se recuperó de un crash inesperado</h1>
+          <h1>La app se recuperó de un fallo inesperado</h1>
           <p className="muted">
-            Guardé el error en diagnostics para soporte. Podés recargar la app y recuperar la sesión
-            autosaveada.
+            Guardé el error en diagnósticos para soporte. Podés recargar la app y recuperar la sesión
+            autoguardada.
           </p>
           <div className="inline-code-block">{this.state.error.message}</div>
           <div className="row gap wrap">
