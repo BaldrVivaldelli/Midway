@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0984ac47d20d44b5d4f710429fb13760831fd8cc5818c8ac8c86a1f99debab2c # shrinks to (outcomes, cancel_point) = ([SuccessNoAssertion, NetworkError], Some(1))
+cc 289e28102219927d8d08daa2193c0d388f3ebbb28c49ebaf67fec767aab5b78a # shrinks to (outcomes, cancel_point) = ([NetworkError, SuccessNoAssertion, SuccessNoAssertion, SuccessNoAssertion], Some(3))

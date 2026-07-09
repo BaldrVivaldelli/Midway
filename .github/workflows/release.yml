@@ -23,18 +23,13 @@ env:
   RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
 
 jobs:
+  # 1) Quality gate: workspace Rust completo (100% Rust sobre iced tras la Fase 8).
   quality:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -44,49 +39,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Cargo check (workspace)
+        run: cargo check --workspace
 
-      - name: Frontend quality gate
-        run: npm run build:ci
+      - name: Cargo test (workspace)
+        run: cargo test --workspace
 
-      - name: Cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
-
-  build:
+  # 2) Crea (o reutiliza) el release draft una sola vez, evitando la carrera
+  #    entre los jobs de la matriz al subir assets.
+  release-draft:
     needs: quality
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
-      attestations: write
-      id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-22.04
-            platform_key: linux-x86_64
-            tauri_args: "--target x86_64-unknown-linux-gnu"
-            artifact_name: bundle-linux-x86_64
-            rust_targets: x86_64-unknown-linux-gnu
-          - runner: windows-latest
-            platform_key: windows-x86_64
-            tauri_args: ""
-            artifact_name: bundle-windows-x86_64
-            rust_targets: ""
-            
-    runs-on: ${{ matrix.runner }}
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      MIDWAY_GITHUB_REPOSITORY: ${{ github.repository }}
-      MIDWAY_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-      MIDWAY_APP_IDENTIFIER: ${{ vars.MIDWAY_APP_IDENTIFIER || 'com.aatv.midway' }}
-      MIDWAY_PUBLISHER: ${{ vars.MIDWAY_PUBLISHER || 'Midway' }}
-      MIDWAY_HOMEPAGE: ${{ vars.MIDWAY_HOMEPAGE || format('https://github.com/{0}', github.repository) }}
-      MIDWAY_PRODUCT_NAME: ${{ vars.MIDWAY_PRODUCT_NAME || 'Midway' }}
-      MIDWAY_BETA_PRODUCT_NAME: ${{ vars.MIDWAY_BETA_PRODUCT_NAME || 'Midway Beta' }}
+    outputs:
+      channel: ${{ steps.channel.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
 
@@ -100,11 +67,75 @@ jobs:
           fi
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure draft release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ steps.channel.outputs.channel == 'beta' }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG ya existe; se reutiliza el draft."
+          else
+            PRERELEASE_FLAG=""
+            if [[ "$PRERELEASE" == "true" ]]; then
+              PRERELEASE_FLAG="--prerelease"
+            fi
+            gh release create "$RELEASE_TAG" \
+              --draft \
+              --title "Midway $RELEASE_TAG" \
+              --generate-notes \
+              $PRERELEASE_FLAG
+          fi
+
+  # 3) Empaqueta midway-desktop con cargo-packager en la matriz Windows/Linux
+  #    x86_64 (sin macOS). Este job NO toca el release: sólo produce y valida los
+  #    instaladores y los deja como artefactos de workflow (staging). La
+  #    publicación al draft ocurre en el job `publish`, que sólo corre si TODAS
+  #    las plataformas empaquetaron con éxito. Así, un fallo de `cargo-packager`
+  #    en cualquier plataforma detiene el pipeline y evita publicar artefactos
+  #    parciales o corruptos (Requisito 8.6).
+  build:
+    needs: release-draft
+    permissions:
+      contents: read
+    strategy:
+      # Requisito 8.6: un fallo de empaquetado en cualquier plataforma debe
+      # detener el pipeline de release. `fail-fast: true` cancela las patas
+      # restantes de la matriz en cuanto una falla, evitando seguir gastando
+      # recursos y dejando explícito que el release no puede continuar.
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform_key: linux-x86_64
+            rust_targets: x86_64-unknown-linux-gnu
+            packager_formats: appimage deb
+          - runner: windows-latest
+            platform_key: windows-x86_64
+            rust_targets: ""
+            packager_formats: nsis wix
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MIDWAY_GITHUB_REPOSITORY: ${{ github.repository }}
+      MIDWAY_RELEASE_CHANNEL: ${{ needs.release-draft.outputs.channel }}
+      MIDWAY_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+      MIDWAY_APP_IDENTIFIER: ${{ vars.MIDWAY_APP_IDENTIFIER || 'com.aatv.midway' }}
+      MIDWAY_PUBLISHER: ${{ vars.MIDWAY_PUBLISHER || 'Midway' }}
+      MIDWAY_HOMEPAGE: ${{ vars.MIDWAY_HOMEPAGE || format('https://github.com/{0}', github.repository) }}
+      MIDWAY_PRODUCT_NAME: ${{ vars.MIDWAY_PRODUCT_NAME || 'Midway' }}
+      MIDWAY_BETA_PRODUCT_NAME: ${{ vars.MIDWAY_BETA_PRODUCT_NAME || 'Midway Beta' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node se conserva únicamente para ejecutar los scripts de release en
+      # `scripts/release/*.mjs` (render de config de cargo-packager, manifiesto
+      # del updater y checksums); ya no hay build de frontend Vite ni `npm ci`.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -117,68 +148,155 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install frontend dependencies
-        run: npm ci
+      # Genera midway-desktop/packager.{stable,beta}.generated.json a partir de
+      # [package.metadata.packager] (fuente única de verdad) aplicando los
+      # overrides por canal (identifier/productName/homepage/publisher).
+      - name: Generate cargo-packager config
+        shell: bash
+        run: node scripts/release/render-packager-config.mjs --channel "$MIDWAY_RELEASE_CHANNEL"
 
-      - name: Generate release Tauri config
-        env:
-          MIDWAY_RELEASE_CHANNEL: ${{ steps.channel.outputs.channel }}
-          VITE_MIDWAY_UPDATE_CHANNEL: ${{ steps.channel.outputs.channel }}
-        run: npm run release:prepare
+      # Versión pinneada literal (Requisito 11.1): sin rangos abiertos y
+      # verificable de forma idéntica en midway-desktop/Cargo.toml y docs.
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version =0.11.8 --locked
 
-      - name: Frontend quality gate
-        env:
-          VITE_MIDWAY_UPDATE_CHANNEL: ${{ steps.channel.outputs.channel }}
-          VITE_APP_VERSION: ${{ env.RELEASE_TAG }}
-        run: npm run build:ci
+      # Reemplaza a la antigua GitHub Action de Tauri: compila
+      # (before-packaging-command) y empaqueta midway-desktop con la config del
+      # canal. `--formats` se restringe a los válidos por plataforma para no
+      # invocar formatos ajenos al SO actual. Si `cargo packager` falla, el paso
+      # sale con código distinto de cero y el paso siguiente reporta la
+      # plataforma y detiene el pipeline (Requisito 8.6).
+      - name: Package midway-desktop
+        id: package
+        shell: bash
+        run: |
+          CONFIG="midway-desktop/packager.${MIDWAY_RELEASE_CHANNEL}.generated.json"
+          echo "Empaquetando canal '$MIDWAY_RELEASE_CHANNEL' con $CONFIG"
+          cargo packager --release --verbose \
+            --config "$CONFIG" \
+            --formats ${{ matrix.packager_formats }}
 
-      - name: Build and upload Tauri assets
-        id: tauri
-        uses: tauri-apps/tauri-action@v1
+      # Requisito 8.6: si el empaquetado falló, se reporta explícitamente la
+      # plataforma afectada y la causa (con enlace al log del paso anterior) y se
+      # aborta. Combinado con `fail-fast: true` y con que `publish`/`metadata`
+      # dependen del éxito de este job, garantiza que no se publiquen artefactos
+      # parciales o corruptos.
+      - name: Report packaging failure
+        if: ${{ failure() && steps.package.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "::error title=Empaquetado fallido (${{ matrix.platform_key }})::cargo-packager falló al generar los instaladores para la plataforma '${{ matrix.platform_key }}' (formatos: ${{ matrix.packager_formats }}). Se detiene el pipeline de release; no se publicarán artefactos parciales o corruptos. Revisá el log del paso 'Package midway-desktop' para la causa exacta del fallo."
+          exit 1
+
+      # cargo-packager escribe los instaladores dentro del target dir; se
+      # recolectan por extensión (AppImage/deb en Linux, NSIS setup.exe / MSI en
+      # Windows), excluyendo el binario crudo `midway-desktop[.exe]`.
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p dist
+          find target -type f \( \
+            -name '*.AppImage' -o \
+            -name '*.deb' -o \
+            -name '*-setup.exe' -o \
+            -name '*.msi' \
+          \) -exec cp {} dist/ \;
+          echo "Instaladores recolectados:"
+          ls -la dist
+
+      # Salvaguarda extra: aunque `cargo packager` haya salido con éxito, si no
+      # se produjo ningún instalador para esta plataforma el release quedaría
+      # incompleto/corrupto. Se detiene el pipeline en lugar de continuar
+      # (Requisito 8.6).
+      - name: Verify installers were produced
+        shell: bash
+        run: |
+          count=$(find dist -type f | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error title=Sin instaladores (${{ matrix.platform_key }})::cargo-packager terminó sin error pero no se generó ningún instalador para '${{ matrix.platform_key }}'. Se detiene el pipeline para no publicar un release incompleto o corrupto."
+            exit 1
+          fi
+          echo "Instaladores válidos para ${{ matrix.platform_key }}: $count"
+
+      # Staging: los instaladores se guardan como artefacto de workflow, NO se
+      # suben al release todavía. El job `publish` los recoge sólo si todas las
+      # plataformas de la matriz tuvieron éxito.
+      - name: Stage installers as workflow artifact
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: Midway ${{ env.RELEASE_TAG }}
-          releaseBody: |
-            ## Highlights
-            - Review the generated notes below and replace these bullets with the 3–5 cambios más importantes.
-            - Confirmá compatibilidad por plataforma antes de publicar el draft.
-            - Revisá `SHA256SUMS.txt`, `latest.json` y las firmas adjuntas.
-          releaseDraft: true
-          prerelease: ${{ steps.channel.outputs.channel == 'beta' }}
-          generateReleaseNotes: true
-          tauriScript: npm run tauri
-          releaseAssetNamePattern: "Midway_[version]_[platform]_[arch][_setup][ext]"
-          uploadUpdaterJson: false
-          updaterJsonPreferNsis: true
-          args: >-
-            ${{ matrix.tauri_args }}
-            --config src-tauri/tauri.release.generated.json
-            ${{ steps.channel.outputs.channel == 'beta' && '--config src-tauri/tauri.beta.generated.json' || '' }}
+          name: installers-${{ matrix.platform_key }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # 3b) Publica los instaladores al draft SOLO si TODAS las plataformas
+  #     empaquetaron con éxito. `needs: build` exige que las dos patas de la
+  #     matriz terminen bien; si cualquiera falla (o es cancelada por
+  #     `fail-fast`), este job se salta y ningún instalador llega al release,
+  #     evitando publicar artefactos parciales o corruptos (Requisito 8.6).
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download staged installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify installers are present before publishing
+        shell: bash
+        run: |
+          mkdir -p dist
+          echo "Instaladores a publicar:"
+          ls -la dist
+          count=$(find dist -type f | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error title=Publicación abortada::No hay instaladores para publicar; se aborta antes de tocar el release para no dejarlo en un estado parcial."
+            exit 1
+          fi
+
+      - name: Upload installers to draft release
+        shell: bash
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
 
       - name: Generate artifact attestations
         uses: actions/attest@v4
         with:
           subject-path: |
-            src-tauri/target/**/release/bundle/**/*.AppImage
-            src-tauri/target/**/release/bundle/**/*.deb
-            src-tauri/target/**/release/bundle/**/*.dmg
-            src-tauri/target/**/release/bundle/**/*.app.tar.gz
-            src-tauri/target/**/release/bundle/**/*.exe
-            src-tauri/target/**/release/bundle/**/*.msi
+            dist/*.AppImage
+            dist/*.deb
+            dist/*-setup.exe
+            dist/*.msi
 
+  # 4) Genera y adjunta metadatos del updater (latest.json / latest-beta.json)
+  #    y SHA256SUMS.txt sobre los artefactos de cargo-packager subidos al draft.
+  #    Depende de `publish`, de modo que los metadatos del updater sólo se
+  #    generan cuando el release ya tiene el set completo de instaladores.
   metadata:
-    needs: build
+    needs: publish
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
+      # Node se conserva para ejecutar los scripts de release en
+      # `scripts/release/*.mjs` (manifiesto del updater y checksums); ya no hay
+      # dependencias de frontend que instalar con npm.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
 
       - name: Fetch release metadata from GitHub
         env:

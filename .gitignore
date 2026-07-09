@@ -9,10 +9,12 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Tauri / Rust build outputs
-src-tauri/target/
-src-tauri/tauri.release.generated.json
-src-tauri/tauri.beta.generated.json
+# Rust build outputs (Cargo workspace)
+/target/
+
+# cargo-packager generated per-channel configs (scripts/release/render-packager-config.mjs)
+midway-desktop/packager.stable.generated.json
+midway-desktop/packager.beta.generated.json
 
 # Release working directories
 out/

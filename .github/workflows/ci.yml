@@ -10,33 +10,14 @@ permissions:
   contents: read
 
 jobs:
-  frontend:
+  # Compila y testea el workspace Rust completo: midway-core y midway-desktop.
+  # Tras la Fase 8, el frontend TypeScript/React (`src/`) y el crate `midway`
+  # (`src-tauri`) fueron eliminados, por lo que ya no existe job de frontend ni
+  # tooling de Node/npm en CI: la aplicación es 100% Rust sobre iced.
+  workspace:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Frontend quality gate
-        run: npm run build:ci
-
-  tauri-check:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -46,8 +27,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Cargo check (workspace)
+        run: cargo check --workspace
 
-      - name: Cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Cargo test (workspace)
+        run: cargo test --workspace
