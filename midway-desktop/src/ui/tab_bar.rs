@@ -1,46 +1,87 @@
-//! Widget de tabs reutilizable (Tarea 5.1, Fase 2): envuelve la
-//! construcción de `iced_aw::{TabBar, Tabs}` para evitar duplicar el mismo
-//! wiring en las tres áreas del diseño que usan tabs:
-//!
-//! - Las tabs de configuración del `Request_Composer` (Params/Headers/Auth/
-//!   Body/Tests, Tarea 5.1).
-//! - Las tabs del `Response_Inspector` (Body/Headers/Tests, migradas desde
-//!   botones simples en esta misma tarea).
-//! - Las secciones del `Workspace_Panel` lateral (Environments/Data/
-//!   History/Diagnostics/App updates, Fase 3, Tarea 7.1).
-//!
-//! Ver diseño: "Components and Interfaces > Tabs de configuración del
-//! request (Fase 2)".
-//! Ver requisitos: 3.1.
+//! Flat tab bar — renders tabs as plain text with bold for active tab.
+//! Matches the Insomnia-style: no borders, no backgrounds on tabs, just
+//! text weight differentiation.
 
-use iced::{Element, Length};
-use iced_aw::widget::{TabLabel, Tabs};
+use iced::widget::{button, container, row, text};
+use iced::{font, Border, Element, Font, Length};
 
-/// Construye un widget de tabs (`iced_aw::Tabs`, que combina internamente
-/// un `TabBar` con el contenido de la tab activa) a partir de una lista de
-/// entradas `(id, etiqueta, contenido)`, el id de la tab actualmente activa
-/// y la función que mapea el id seleccionado por el usuario a un `Message`.
-///
-/// `TabId` debe ser `Eq + Clone` (requisito de `iced_aw::Tabs`); los enums
-/// de tab del diseño (`RequestTab`, `ResponseInspectorTab`, y los que se
-/// agreguen para las secciones del `Workspace_Panel`) ya derivan
-/// `PartialEq, Eq, Clone, Copy`, por lo que son compatibles sin envoltura
-/// adicional.
+use crate::ui::design_system::DesignSystem;
+
+/// Renders a flat tab bar + the active tab's content below it.
 pub fn tabs<'a, Message, TabId, F>(
     entries: Vec<(TabId, &'static str, Element<'a, Message>)>,
     active: &TabId,
     on_select: F,
+    ds: &DesignSystem,
 ) -> Element<'a, Message>
 where
-    Message: 'a,
+    Message: 'a + Clone,
     TabId: Eq + Clone + 'a,
     F: 'static + Fn(TabId) -> Message,
 {
-    let mut widget = Tabs::new(on_select).width(Length::Fill);
+    let body = ds.typography.body;
+    let text_primary = ds.palette.text_primary;
+    let text_secondary = ds.palette.text_secondary;
 
-    for (id, label, content) in entries {
-        widget = widget.push(id, TabLabel::Text(label.to_string()), content);
+    let mut tabs_row = row![].spacing(ds.spacing.lg);
+
+    let labels: Vec<(TabId, &'static str)> = entries
+        .iter()
+        .map(|(id, label, _)| (id.clone(), *label))
+        .collect();
+
+    for (id, label) in &labels {
+        let is_active = id == active;
+        let tab_color = if is_active { text_primary } else { text_secondary };
+        let weight = if is_active { font::Weight::Bold } else { font::Weight::Normal };
+
+        let tab_font = Font {
+            family: font::Family::SansSerif,
+            weight,
+            ..Font::DEFAULT
+        };
+
+        let id_clone = id.clone();
+        let tab_btn = button(
+            text(*label)
+                .size(body.size)
+                .font(tab_font)
+                .color(tab_color),
+        )
+        .padding([ds.spacing.xs, ds.spacing.sm])
+        .style(move |_theme, _status| button::Style {
+            background: None,
+            text_color: tab_color,
+            border: Border::default(),
+            ..button::Style::default()
+        })
+        .on_press(on_select(id_clone));
+
+        tabs_row = tabs_row.push(tab_btn);
     }
 
-    widget.set_active_tab(active).into()
+    // Find active tab content
+    let active_content = entries
+        .into_iter()
+        .find(|(id, _, _)| id == active)
+        .map(|(_, _, content)| content);
+
+    let border_color = ds.palette.border;
+    let separator = container(text(""))
+        .width(Length::Fill)
+        .height(Length::Fixed(1.0))
+        .style(move |_theme| iced::widget::container::Style {
+            background: Some(border_color.into()),
+            ..iced::widget::container::Style::default()
+        });
+
+    let mut col = iced::widget::column![tabs_row, separator]
+        .spacing(ds.spacing.xs)
+        .width(Length::Fill);
+
+    if let Some(content) = active_content {
+        col = col.push(content);
+    }
+
+    col.into()
 }

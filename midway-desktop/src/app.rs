@@ -15,16 +15,17 @@ use std::sync::Arc;
 
 use iced::futures::channel::mpsc;
 use iced::futures::stream::{self, BoxStream, StreamExt};
-use iced::widget::{column, row, text};
-use iced::{Element, Subscription, Task};
+use iced::widget::{column, container, mouse_area, responsive, row, scrollable, text};
+use iced::{Element, Length, Subscription, Task};
 use tokio::sync::oneshot;
 
 use midway_core::domain::http::{
-    ApiKeyPlacement, AuthConfig, BodyMode, HttpMethod, KeyValueRow, RequestDraft, RequestPreview, ResponseEnvelope,
+    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow, RequestDraft,
+    RequestPreview, ResponseEnvelope,
 };
 use midway_core::domain::interop::{
     detect_import_format, export_postman_collection, import_openapi_document, import_postman_collection,
-    make_native_bundle, parse_json_or_yaml_payload, parse_native_bundle, NativeWorkspaceBundle,
+    make_native_bundle, parse_json_or_yaml_payload, parse_native_bundle, ImportedRequest, NativeWorkspaceBundle,
     WorkspaceExportFormat, WorkspaceImportFormat,
 };
 use midway_core::domain::interpolation::{resolve_request, SecretRenderMode};
@@ -35,15 +36,18 @@ use midway_core::domain::testing::{
     evaluate_response_assertions, AssertionOperator, AssertionReport, AssertionSource, ResponseAssertion,
 };
 use midway_core::domain::workspace::{
-    EnvironmentRecord, SaveEnvironmentInput, SaveRequestInput, WorkspaceSnapshot,
+    CollectionSummary, CollectionWithRequests, EnvironmentRecord, Folder, SaveEnvironmentInput, SaveFolderInput,
+    SaveRequestInput, WorkspaceSnapshot,
 };
 
 use crate::command_palette;
 use crate::curl::{self, create_blank_draft};
 use crate::diagnostics::{self, CrashRecord};
 use crate::state::AppState;
+use crate::ui::design_system::{DesignSystem, ThemeMode};
 use crate::ui::request_composer::{self, AuthKind, KeyValueTarget};
 use crate::ui::response_inspector;
+use crate::ui::text_editor::TextEditorState;
 use crate::ui::workspace_panel;
 
 /// Mensaje de nivel superior de `midway-desktop`, agrupado por área (patrón
@@ -57,6 +61,7 @@ pub enum Message {
     Workspace(WorkspaceMessage),
     Runner(RunnerMessage),
     Palette(PaletteMessage),
+    Theme(ThemeMessage),
     Session(SessionMessage),
     /// Scaffolding: el flujo del Updater in-app (Fase 6) está implementado en
     /// `updater.rs` pero todavía no se emite desde una subscription/UI, de ahí
@@ -64,11 +69,50 @@ pub enum Message {
     #[allow(dead_code)]
     Updater(UpdaterMessage),
     Keyboard(KeyboardMessage),
+    /// Mensajes del Activity_Bar (Tarea 10.1).
+    ActivityBar(ActivityBarMessage),
+    /// Mensajes del Request_Tree_Pane (Tarea 11.1).
+    #[allow(dead_code)]
+    Tree(TreeMessage),
+    /// Alta, modificación y baja de colecciones, carpetas y requests.
+    WorkspaceCrud(WorkspaceCrudMessage),
+    /// Mensajes del Top_Bar (Tarea 12.1).
+    TopBar(TopBarMessage),
+    /// Mensajes de redimensionamiento de paneles (dividers arrastrables).
+    PanelResize(PanelResizeMessage),
     /// Autosave / progreso periódico. Scaffolding: aún no lo emite ninguna
     /// subscription (el autosave se agenda en la Fase 5 pero no está cableado
     /// al runtime todavía).
     #[allow(dead_code)]
     Tick,
+}
+
+// ---------------------------------------------------------------------------
+// Panel resize types
+// ---------------------------------------------------------------------------
+
+/// Divisor que está siendo arrastrado actualmente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelDragState {
+    TreeMain,
+    RequestResponse,
+}
+
+/// Mensajes del sistema de redimensionamiento de paneles.
+#[derive(Debug, Clone)]
+pub enum PanelResizeMessage {
+    /// El usuario presionó el divider del tree pane (inicia arrastre).
+    TreeDividerDragStarted,
+    /// El usuario presionó el divider entre request y response.
+    RequestResponseDividerDragStarted,
+    /// El puntero entró en la zona de agarre de un divisor.
+    DividerHovered(PanelDragState),
+    /// El puntero salió de la zona de agarre de un divisor.
+    DividerUnhovered(PanelDragState),
+    /// El ratón se movió durante un arrastre activo (coordenada de ventana).
+    DividerDragged(f32),
+    /// El usuario soltó el botón del ratón (finaliza cualquier arrastre).
+    DividerDragEnded,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +169,20 @@ pub enum RequestComposerMessage {
     /// `domain::preview::make_preview`), cuyo resultado llega como
     /// `PreviewLoaded`.
     SettingsPressed,
+    /// Abre el diálogo para guardar el request activo en una colección.
+    SaveRequested,
+    /// Cambia el nombre del request dentro del diálogo de guardado.
+    SaveNameChanged(String),
+    /// Cambia la colección de destino y reinicia la carpeta seleccionada.
+    SaveCollectionChanged(String),
+    /// Cambia la carpeta de destino (`None` representa la raíz).
+    SaveFolderChanged(Option<String>),
+    /// Confirma y persiste el request en la colección seleccionada.
+    SaveConfirmed,
+    /// Cierra el diálogo sin guardar.
+    SaveCancelled,
+    /// Resultado asíncrono del guardado explícito del request.
+    SaveCompleted(Result<RequestSaveOutcome, String>),
     /// Resultado asíncrono de un cómputo de preview disparado por
     /// `SettingsPressed` (Tarea 3.20). Se identifica la tab por `tab_id`
     /// (no por índice de tab activa), por la misma razón que
@@ -230,6 +288,40 @@ pub enum RequestComposerMessage {
     /// El usuario presionó el botón de eliminar de una assertion de la tab
     /// Tests (Tarea 5.8, Requisito 3.9), identificada por `assertion_id`.
     AssertionRemoved { assertion_id: String },
+    /// El usuario seleccionó un modo de body distinto (None/Json/Text/
+    /// FormData) en el `pick_list` de la tab Body.
+    ///
+    /// Al cambiar a Json o Text, sincroniza el `Text_Editor_Component` de
+    /// la tab con el `draft.body.value` actual, para que el editor muestre
+    /// el contenido existente (por ejemplo, tras importar un cURL con
+    /// body). El contenido de `draft.body.value` y `draft.body.form_data`
+    /// no se descarta al cambiar de modo (a diferencia de Auth, cambiar el
+    /// modo de body es reversible sin perder lo ya escrito).
+    BodyModeChanged(BodyMode),
+    /// El usuario editó el contenido del `Text_Editor_Component` de la tab
+    /// Body (modos Json y Text): la acción se aplica al `Content` del
+    /// editor y el texto resultante se refleja en `draft.body.value`.
+    BodyTextAction(iced::widget::text_editor::Action),
+    /// El usuario presionó "Agregar campo" en el editor de filas de la tab
+    /// Body (modo FormData). Agrega una `FormDataRow` vacía de tipo Text
+    /// (habilitada por defecto) al final de `draft.body.form_data`.
+    FormDataRowAdded,
+    /// El usuario editó la columna "key" de una fila del editor FormData,
+    /// identificada por `row_id`.
+    FormDataRowKeyChanged { row_id: String, key: String },
+    /// El usuario editó la columna "value" de una fila del editor FormData
+    /// (texto libre para campos Text, o path del archivo para campos
+    /// File), identificada por `row_id`.
+    FormDataRowValueChanged { row_id: String, value: String },
+    /// El usuario alternó el checkbox "enabled" de una fila del editor
+    /// FormData, identificada por `row_id`.
+    FormDataRowEnabledToggled { row_id: String },
+    /// El usuario cambió el tipo (Text/File) de una fila del editor
+    /// FormData, identificada por `row_id`.
+    FormDataRowKindChanged { row_id: String, kind: FormDataFieldKind },
+    /// El usuario presionó el botón de eliminar de una fila del editor
+    /// FormData, identificada por `row_id`.
+    FormDataRowRemoved { row_id: String },
     /// El usuario cerró una tab de request, identificada por `tab_id`
     /// (Tarea 11.8, Requisito 6.5; Tarea 11.10, Requisito 6.6).
     ///
@@ -253,6 +345,11 @@ pub enum RequestComposerMessage {
     /// `DiscardRequested`/`CancelRequested`).
     #[allow(dead_code)] // Scaffolding: aún sin control de UI que dispare el cierre de tab.
     TabClosed { tab_id: String },
+    /// El usuario seleccionó una tab desde el panel de requests (Tarea
+    /// 8.1, Requisitos 2.5 y 2.7): activa el índice indicado y devuelve el
+    /// foco del contenido principal a la request, sin ensuciar la sesión.
+    #[allow(dead_code)] // Se construirá al integrar el panel en el layout (Tarea 10.3).
+    TabSelected { index: usize },
     /// El usuario solicitó reabrir la tab cerrada más recientemente
     /// (Tarea 11.8, Requisito 6.5), por ejemplo vía el shortcut
     /// Ctrl+Shift+T (Tarea 11.12).
@@ -465,6 +562,13 @@ pub enum PaletteMessage {
 }
 
 #[derive(Debug, Clone)]
+pub enum ThemeMessage {
+    /// El usuario activó el control de cambio de tema (Light/Dark), lo que
+    /// dispara el toggle de `state.theme_mode`.
+    Toggled,
+}
+
+#[derive(Debug, Clone)]
 pub enum SessionMessage {
     /// Tick periódico del timer de autosave (Tarea 11.4, Requisito 6.3),
     /// emitido por la `iced::time::every` subscription combinada en
@@ -515,23 +619,8 @@ pub enum UpdaterMessage {
 #[derive(Debug, Clone)]
 pub enum KeyboardMessage {
     /// Ctrl+S ("Guardar", Requisito 6.8).
-    ///
-    /// `midway-desktop` todavía no tiene, en ningún punto de su UI, un
-    /// flujo de "guardar el draft de la tab activa como
-    /// `SavedRequestRecord` dentro de una colección": el único camino
-    /// existente que invoca `SqliteRepository::save_request`
-    /// (`SaveRequestInput`) es el de import de colecciones (Tareas 7.7/
-    /// 7.9), no una acción explícita del usuario sobre la tab activa.
-    /// Construir ese flujo completo (elegir o crear la collection
-    /// destino, decidir si crea un `SavedRequestRecord` nuevo o actualiza
-    /// uno existente, etc.) está fuera de alcance de esta tarea: 11.12
-    /// solo exige que "el shortcut despache el mensaje/acción
-    /// correspondiente" (Requisito 6.8), no que se agregue la
-    /// funcionalidad de guardar en una collection por primera vez. El
-    /// shortcut de todas formas dispara y despacha este mensaje (no se
-    /// descarta silenciosamente en la subscription): `update_keyboard` lo
-    /// recibe y por ahora es un no-op documentado (`Task::none()`), listo
-    /// para conectarse el día que ese flujo exista.
+    /// Abre el mismo diálogo de nombre/colección/carpeta que el botón
+    /// Guardar del composer.
     SaveRequested,
     /// Ctrl+Shift+N ("Nuevo request", Requisito 6.8).
     ///
@@ -599,15 +688,228 @@ pub enum RequestTab {
     Tests,
 }
 
-/// Tab del `Response_Inspector` (Body | Headers | Tests) para la respuesta
-/// de la tab de request activa. Ver diseño: "Components and Interfaces >
-/// Request_Composer y Response_Inspector (Fase 1)"; Requisito 2.11.
+/// Tab del `Response_Inspector` (Body | Headers | Cookies | Tests) para la
+/// respuesta de la tab de request activa. Ver diseño: "Components and
+/// Interfaces > Request_Composer y Response_Inspector (Fase 1)"; Requisito
+/// 2.11, 9.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResponseInspectorTab {
     #[default]
     Body,
     Headers,
+    Cookies,
     Tests,
+}
+
+// ---------------------------------------------------------------------------
+// Nuevos tipos de estado y mensajes para el rediseño Insomnia (Tarea 9.1).
+// ---------------------------------------------------------------------------
+
+/// Modo del Top_Bar: Debug (Composer+Inspector) o Test (Collection_Runner).
+/// Default: Debug (Req 6.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TopBarMode {
+    #[default]
+    Debug,
+    Test,
+}
+
+/// Estado del Request_Tree_Pane: filtro de texto y estado de expandido/
+/// colapsado por folder (Req 5.3, 5.11).
+#[derive(Debug, Clone)]
+pub struct TreeViewState {
+    /// Texto actual del campo de filtro.
+    pub filter: String,
+    /// Conjunto de folder ids actualmente colapsados (default: expandido).
+    pub collapsed: HashSet<String>,
+    /// Respaldo del estado de colapsado/expandido justo antes de que el
+    /// filtro forzara la expansión (Req 5.11). Se restaura al vaciar el
+    /// filtro.
+    pub collapsed_snapshot: Option<HashSet<String>>,
+    /// Error de apertura de request (Req 5.7).
+    pub error: Option<String>,
+    /// Request que se está arrastrando y destino actualmente señalado.
+    pub request_drag: Option<RequestDragState>,
+    /// Request cuya nueva ubicación se está persistiendo.
+    pub moving_request_id: Option<String>,
+    /// Fila bajo el puntero, usada para revelar acciones contextuales.
+    pub hovered_item: Option<TreeHoveredItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeHoveredItem {
+    Collection,
+    Folder(String),
+    Request(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestDragState {
+    pub request_id: String,
+    pub target: Option<RequestDropTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestDropTarget {
+    Root,
+    Folder(String),
+}
+
+impl Default for TreeViewState {
+    fn default() -> Self {
+        Self {
+            filter: String::new(),
+            collapsed: HashSet::new(),
+            collapsed_snapshot: None,
+            error: None,
+            request_drag: None,
+            moving_request_id: None,
+            hovered_item: None,
+        }
+    }
+}
+
+/// Estado del prompt de creación de colección del Activity_Bar (Req 2.5,
+/// 2.7, 2.8).
+#[derive(Debug, Clone)]
+pub struct CreateCollectionPromptState {
+    /// Texto actual del campo de nombre.
+    pub name_input: String,
+    /// Mensaje de error si el nombre es inválido (vacío tras trim, Req 2.8).
+    pub error: Option<String>,
+}
+
+/// Estado del diálogo para guardar el request activo.
+#[derive(Debug, Clone)]
+pub struct SaveRequestPromptState {
+    pub tab_id: String,
+    pub name_input: String,
+    pub collection_id: Option<String>,
+    pub folder_id: Option<String>,
+    pub saving: bool,
+    pub error: Option<String>,
+}
+
+/// Operación actualmente abierta en el diálogo ABM del árbol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceCrudKind {
+    CreateFolder {
+        collection_id: String,
+        parent_folder_id: Option<String>,
+    },
+    RenameCollection {
+        collection_id: String,
+    },
+    DeleteCollection {
+        collection_id: String,
+    },
+    RenameFolder {
+        folder_id: String,
+    },
+    DeleteFolder {
+        folder_id: String,
+    },
+    DeleteRequest {
+        request_id: String,
+    },
+}
+
+/// Estado del diálogo de alta, modificación o baja del árbol.
+#[derive(Debug, Clone)]
+pub struct WorkspaceCrudDialogState {
+    pub kind: WorkspaceCrudKind,
+    pub entity_name: String,
+    pub name_input: String,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+/// Mensajes del ABM de colecciones, carpetas y requests.
+#[derive(Debug, Clone)]
+pub enum WorkspaceCrudMessage {
+    CreateFolderRequested {
+        parent_folder_id: Option<String>,
+    },
+    RenameCollectionRequested(String),
+    DeleteCollectionRequested(String),
+    RenameFolderRequested(String),
+    DeleteFolderRequested(String),
+    DeleteRequestRequested(String),
+    NameChanged(String),
+    Confirmed,
+    Cancelled,
+    Completed(Result<WorkspaceSnapshot, String>),
+}
+
+/// Mensajes del Activity_Bar (Tarea 10.1, Requisito 2).
+#[derive(Debug, Clone)]
+pub enum ActivityBarMessage {
+    /// El usuario seleccionó una colección existente por su id (Req 2.3).
+    CollectionSelected(String),
+    /// El usuario presionó el icono Home para navegar al Workspace_Panel
+    /// (Req 11.1, 11.11): fija `main_content_focus = WorkspaceSection`.
+    HomePressed,
+    /// El usuario presionó el icono Activity para navegar a
+    /// WorkspaceSection/History o toggle back (Req 8.1).
+    ActivityPressed,
+    /// El usuario presionó el botón "+" para crear una colección (Req 2.5).
+    CreateCollectionPressed,
+    /// El usuario editó el nombre en el prompt de creación.
+    CreateCollectionNameChanged(String),
+    /// El usuario confirmó la creación (Req 2.5, 2.8).
+    CreateCollectionConfirmed,
+    /// El usuario canceló el prompt de creación (Req 2.7).
+    CreateCollectionCancelled,
+    /// Resultado asíncrono de la creación de una colección.
+    CollectionCreated(Result<CollectionSummary, String>),
+}
+
+/// Mensajes del Request_Tree_Pane (Tarea 11.1, Requisito 5).
+#[derive(Debug, Clone)]
+pub enum TreeMessage {
+    /// El usuario editó el texto del filtro (Req 5.2, 5.10, 5.11).
+    FilterChanged(String),
+    /// El usuario colapsó/expandió una folder (Req 5.4).
+    FolderToggled(String),
+    /// El usuario abrió un request guardado (Req 5.6).
+    RequestOpened(String),
+    /// Abre un request y muestra su diálogo de nombre/ubicación para editarlo.
+    RequestEditRequested(String),
+    /// Inicia el arrastre desde el asa de un request.
+    RequestDragStarted(String),
+    /// El cursor entró en un destino válido de drop.
+    RequestDropTargetEntered(RequestDropTarget),
+    /// El cursor salió de un destino de drop.
+    RequestDropTargetLeft(RequestDropTarget),
+    /// Finaliza el gesto y persiste el cambio si hay un destino.
+    RequestDragReleased,
+    /// Cancela el gesto sin modificar el workspace.
+    RequestDragCancelled,
+    /// Resultado de persistir la nueva carpeta del request.
+    RequestMoveCompleted {
+        request_id: String,
+        destination_folder_id: Option<String>,
+        result: Result<(), String>,
+    },
+    /// Revela las acciones contextuales de una fila.
+    ItemHovered(TreeHoveredItem),
+    /// Oculta las acciones si el puntero sigue saliendo de la misma fila.
+    ItemUnhovered(TreeHoveredItem),
+    /// El usuario presionó "crear primer request" en el estado vacío (Req 5.8).
+    CreateFirstRequestPressed,
+}
+
+/// Mensajes del Top_Bar (Tarea 12.1, Requisito 6).
+#[derive(Debug, Clone)]
+pub enum TopBarMessage {
+    /// El usuario seleccionó un modo (Debug/Test) (Req 6.4, 6.5).
+    ModeSelected(TopBarMode),
+    /// El usuario presionó el segmento "Midway" del breadcrumb para navegar
+    /// al estado inicial (Req 3.5).
+    BreadcrumbRootClicked,
+    /// El usuario presionó "← Back" para regresar de WorkspaceSection al
+    /// Composer (Req 4.5).
+    BackToComposer,
 }
 
 /// Sección del `Workspace_Panel` lateral (Environments | Data | History |
@@ -624,6 +926,22 @@ pub enum WorkspacePanelSection {
     History,
     Diagnostics,
     AppUpdates,
+}
+
+/// Qué muestra el `Main_Content_Pane`: el `Request_Composer`/`Response_Inspector`
+/// de la tab de request activa, o el contenido de una sección del `Sidebar`
+/// (Environments/Data/History/Diagnostics/App updates). El
+/// `Request_List_Pane` permanece visible y sin cambios en ambos casos
+/// (siempre lista los tabs de request abiertos).
+///
+/// Campo puramente de presentación (no persistido, no de dominio): no
+/// modifica ningún `Message`/`State` de `midway-core`.
+/// Ver diseño: "Layout de tres paneles (Requisito 2)".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MainContentFocus {
+    #[default]
+    RequestTab,
+    WorkspaceSection,
 }
 
 /// Resultado de una ejecución de request: la respuesta HTTP más el reporte
@@ -644,6 +962,15 @@ pub struct ResponseOutcome {
 pub struct SavedRequestSaveOutcome {
     pub tab_id: String,
     pub saved_draft: RequestDraft,
+}
+
+/// Resultado del guardado explícito desde el composer.
+#[derive(Debug, Clone)]
+pub struct RequestSaveOutcome {
+    pub tab_id: String,
+    pub saved_draft: RequestDraft,
+    pub workspace: WorkspaceSnapshot,
+    pub collection_id: String,
 }
 
 /// Estado de una tab de request abierta en la UI.
@@ -676,6 +1003,13 @@ pub struct RequestTabState {
     /// visibilidad del fallo en la UI. Se limpia al iniciar un nuevo
     /// cómputo de preview.
     pub preview_error: Option<String>,
+    /// `Text_Editor_Component` del body del request (modos Json/Text de la
+    /// tab Body), con resaltado de sintaxis JSON. Se mantiene sincronizado
+    /// con `draft.body.value`: `BodyModeChanged` lo repuebla con el valor
+    /// actual del draft al entrar a un modo de texto, y `BodyTextAction`
+    /// aplica cada acción de edición tanto al `Content` de este editor
+    /// como a `draft.body.value`.
+    pub body_editor: TextEditorState,
 }
 
 /// Snapshot de una tab, usado tanto para el stack de tabs cerradas en memoria
@@ -705,6 +1039,10 @@ pub struct WorkspacePanelState {
     /// Panel lateral colapsable (Requisito 4.1): cuando es `true`, `view`
     /// solo renderiza un botón para expandirlo, ocultando las secciones.
     pub collapsed: bool,
+    /// Error de navegación a una sección (Req 11.10): si un control de
+    /// sección no responde o falla, se muestra este error y se mantiene la
+    /// vista actual sin cambiar `active_section` ni `main_content_focus`.
+    pub navigation_error: Option<String>,
     /// Formulario de creación/edición de environments de la sección
     /// Environments (Tarea 7.2, Requisito 4.2).
     pub environment_form: EnvironmentFormState,
@@ -957,6 +1295,11 @@ pub struct SessionStoreState {
     /// tareas posteriores a esta), se usa el valor por defecto de
     /// `crate::session::PanelSizes`.
     pub panel_sizes: crate::session::PanelSizes,
+    /// Tema restaurado junto con los tamaños de panel y copiado al estado
+    /// superior de `Midway` durante el arranque. Mantenerlo aquí permite
+    /// que `restore_pending_session` consuma un único snapshot sin agregar
+    /// otro mecanismo de persistencia paralelo al `Session_Store`.
+    pub theme_mode: ThemeMode,
     /// Sesión cargada con éxito al arrancar (Tarea 11.16,
     /// `crate::session::load_session_or_default`), pendiente de que la
     /// Tarea 11.6 (restauración real de tabs abiertas, tab activa y
@@ -1032,12 +1375,37 @@ pub struct Midway {
     pub palette: PaletteState,
     pub runner: Option<CollectionRunnerState>,
     pub session: SessionStoreState,
+    /// Tema activo de la aplicación, persistido por el autosave existente
+    /// dentro de `SessionSnapshot`.
+    pub theme_mode: ThemeMode,
+    /// Qué muestra el `Main_Content_Pane` (tab de request activa o sección
+    /// del Sidebar). Puramente de presentación, no persistido.
+    pub main_content_focus: MainContentFocus,
     pub updater: UpdaterState,
     pub crash_log: Vec<CrashRecord>,
     /// Aviso de unsaved changes (Tarea 11.10, Requisito 6.6), `Some`
     /// mientras el overlay de Guardar/Descartar/Cancelar está visible
     /// sobre una tab con cambios sin guardar pendiente de cierre.
     pub unsaved_changes_prompt: Option<UnsavedChangesPromptState>,
+    // ----- Nuevos campos del rediseño Insomnia (Tarea 9.1) -----
+    /// Colección actualmente seleccionada en el Activity_Bar (Req 2.3).
+    pub active_collection_id: Option<String>,
+    /// Modo del Top_Bar: Debug o Test (default Debug, Req 6.4).
+    pub top_bar_mode: TopBarMode,
+    /// Estado del Request_Tree_Pane (filtro, expandido/colapsado, Req 5).
+    pub tree: TreeViewState,
+    /// Prompt de creación de colección del Activity_Bar (Req 2.5, 2.7, 2.8).
+    /// `Some` mientras el prompt está visible.
+    pub create_collection_prompt: Option<CreateCollectionPromptState>,
+    /// Diálogo para nombrar y guardar el request activo en una colección.
+    pub save_request_prompt: Option<SaveRequestPromptState>,
+    /// Diálogo ABM contextual para colecciones, carpetas y requests.
+    pub workspace_crud_dialog: Option<WorkspaceCrudDialogState>,
+    /// Estado de arrastre activo del divider del tree pane. `Some` mientras
+    /// el usuario está arrastrando el divider para redimensionar el panel.
+    pub panel_dragging: Option<PanelDragState>,
+    /// Divisor bajo el cursor; permite resaltar sólo el control relevante.
+    pub panel_hovered: Option<PanelDragState>,
 }
 
 impl Midway {
@@ -1070,12 +1438,19 @@ impl Midway {
             }
         }
 
-        let (tabs, active_tab) = restore_pending_session(&mut session);
+        let (tabs, active_tab, session_active_collection_id) = restore_pending_session(&mut session);
+        let theme_mode = session.theme_mode;
+
+        // El snapshot real se carga inmediatamente después de `Midway::new`.
+        // Conservamos temporalmente el id de sesión para poder validarlo
+        // contra las colecciones cuando llegue `WorkspaceSnapshotLoaded`.
+        let workspace_collections: Vec<midway_core::domain::workspace::CollectionWithRequests> = Vec::new();
+        let active_collection_id = session_active_collection_id;
 
         Self {
             app_state: Arc::new(app_state),
             workspace: midway_core::domain::workspace::WorkspaceSnapshot {
-                collections: Vec::new(),
+                collections: workspace_collections,
                 environments: Vec::new(),
                 history: Vec::new(),
                 secrets: Vec::new(),
@@ -1087,9 +1462,19 @@ impl Midway {
             palette: PaletteState::default(),
             runner: None,
             session,
+            theme_mode,
+            main_content_focus: MainContentFocus::default(),
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
             unsaved_changes_prompt: None,
+            active_collection_id,
+            top_bar_mode: TopBarMode::default(),
+            tree: TreeViewState::default(),
+            create_collection_prompt: None,
+            save_request_prompt: None,
+            workspace_crud_dialog: None,
+            panel_dragging: None,
+            panel_hovered: None,
         }
     }
 }
@@ -1112,6 +1497,9 @@ impl Midway {
 ///     cada `TabSnapshot`, preservando `id` y `active_request_tab`.
 ///   - Copia `snapshot.panel_sizes` a `session.panel_sizes` (reemplazando
 ///     el `PanelSizes::default()` de `SessionStoreState::default()`).
+///   - Copia `snapshot.theme_mode` a `session.theme_mode` para que
+///     `Midway::new` restaure el tema activo junto con el resto de la
+///     sesión.
 ///   - Si `open_tabs` está vacío (una sesión válida guardada sin ninguna
 ///     tab abierta, plausible si el usuario cerró todo antes de salir), se
 ///     usa el mismo fallback de una única tab en blanco que el arranque
@@ -1134,9 +1522,11 @@ impl Midway {
 ///   `SessionLoadOutcome::NotFound`/`DiscardedCorruptOrIncompatible`):
 ///   comportamiento por defecto sin cambios, una única tab en blanco con
 ///   `active_tab: Some(0)`.
-fn restore_pending_session(session: &mut SessionStoreState) -> (Vec<RequestTabState>, Option<usize>) {
+fn restore_pending_session(
+    session: &mut SessionStoreState,
+) -> (Vec<RequestTabState>, Option<usize>, Option<String>) {
     let Some(snapshot) = session.pending_restore.take() else {
-        return (vec![RequestTabState::blank()], Some(0));
+        return (vec![RequestTabState::blank()], Some(0), None);
     };
 
     let tabs: Vec<RequestTabState> = snapshot
@@ -1146,9 +1536,14 @@ fn restore_pending_session(session: &mut SessionStoreState) -> (Vec<RequestTabSt
         .collect();
 
     session.panel_sizes = snapshot.panel_sizes;
+    session.theme_mode = snapshot.theme_mode;
+
+    // Preserve the session's active_collection_id for startup resolution
+    // (Requirements 6.2, 9.2).
+    let session_active_collection_id = snapshot.active_collection_id;
 
     if tabs.is_empty() {
-        return (vec![RequestTabState::blank()], Some(0));
+        return (vec![RequestTabState::blank()], Some(0), session_active_collection_id);
     }
 
     let active_tab = snapshot
@@ -1157,7 +1552,7 @@ fn restore_pending_session(session: &mut SessionStoreState) -> (Vec<RequestTabSt
         .and_then(|target_id| tabs.iter().position(|tab| &tab.id == target_id))
         .or(Some(0));
 
-    (tabs, active_tab)
+    (tabs, active_tab, session_active_collection_id)
 }
 
 impl RequestTabState {
@@ -1173,6 +1568,7 @@ impl RequestTabState {
     /// Usado por el enrutamiento de pegado de cURL (Tarea 3.5, Criterio 2.8)
     /// para crear una nueva tab sin modificar la tab activa original.
     pub fn from_draft(draft: RequestDraft) -> Self {
+        let body_editor = TextEditorState::new(&draft.body.value);
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             draft,
@@ -1187,6 +1583,7 @@ impl RequestTabState {
             curl_paste_error: None,
             send_error: None,
             preview_error: None,
+            body_editor,
         }
     }
 
@@ -1199,6 +1596,7 @@ impl RequestTabState {
     /// en `TabSnapshot`, así que se reinicializan a su valor por defecto,
     /// igual que una tab recién abierta.
     pub fn from_snapshot(snapshot: TabSnapshot) -> Self {
+        let body_editor = TextEditorState::new(&snapshot.draft.body.value);
         Self {
             id: snapshot.id,
             draft: snapshot.draft,
@@ -1213,6 +1611,7 @@ impl RequestTabState {
             curl_paste_error: None,
             send_error: None,
             preview_error: None,
+            body_editor,
         }
     }
 
@@ -1250,6 +1649,27 @@ fn is_draft_empty(draft: &RequestDraft) -> bool {
         && draft.headers.is_empty()
         && matches!(draft.auth, AuthConfig::None)
         && matches!(draft.body.mode, BodyMode::None)
+}
+
+/// Resolves which collection should be active at startup.
+///
+/// Returns `session_id` if it matches an existing collection, otherwise
+/// `collections[0].id`, or `None` for an empty collections list.
+///
+/// This is a pure function extracted for testability (Property 7,
+/// Requirements 6.1, 6.2, 6.3, 6.4).
+pub fn resolve_startup_collection(
+    collections: &[CollectionWithRequests],
+    session_id: Option<&str>,
+) -> Option<String> {
+    // If session_id matches an existing collection, return it
+    if let Some(sid) = session_id {
+        if collections.iter().any(|c| c.collection.id == sid) {
+            return Some(sid.to_string());
+        }
+    }
+    // Fallback: first collection's id, or None if empty
+    collections.first().map(|c| c.collection.id.clone())
 }
 
 /// Determina si una tab tiene cambios sin guardar (Tarea 11.10, Requisito
@@ -1390,8 +1810,24 @@ pub fn update(state: &mut Midway, message: Message) -> Task<Message> {
         Message::Runner(message) => guarded_update("Runner", state, |state| update_runner(state, message)),
         Message::Session(message) => guarded_update("Session", state, |state| update_session(state, message)),
         Message::Palette(message) => guarded_update("Palette", state, |state| update_palette(state, message)),
+        Message::Theme(message) => guarded_update("Theme", state, |state| update_theme(state, message)),
         Message::Keyboard(message) => guarded_update("Keyboard", state, |state| update_keyboard(state, message)),
         Message::Updater(_) => Task::none(),
+        Message::ActivityBar(message) => {
+            guarded_update("ActivityBar", state, |state| update_activity_bar(state, message))
+        }
+        Message::Tree(message) => {
+            guarded_update("Tree", state, |state| {
+                crate::ui::request_tree_pane::update_tree(state, message)
+            })
+        }
+        Message::WorkspaceCrud(message) => {
+            guarded_update("WorkspaceCrud", state, |state| update_workspace_crud(state, message))
+        }
+        Message::TopBar(message) => guarded_update("TopBar", state, |state| update_top_bar(state, message)),
+        Message::PanelResize(message) => {
+            guarded_update("PanelResize", state, |state| update_panel_resize(state, message))
+        }
     }
 }
 
@@ -1683,6 +2119,763 @@ fn update_palette(state: &mut Midway, message: PaletteMessage) -> Task<Message> 
     }
 }
 
+/// Implementa el cambio de `ThemeMode` (Requisito 5.3 del spec).
+fn update_theme(state: &mut Midway, message: ThemeMessage) -> Task<Message> {
+    match message {
+        ThemeMessage::Toggled => {
+            state.theme_mode = state.theme_mode.toggled();
+            state.session.dirty = true;
+            Task::none()
+        }
+    }
+}
+
+/// Actualiza el estado en respuesta a un `ActivityBarMessage` (Tarea 10.1,
+/// Requisitos 2.1–2.8).
+fn update_activity_bar(state: &mut Midway, message: ActivityBarMessage) -> Task<Message> {
+    match message {
+        ActivityBarMessage::HomePressed => {
+            // Req 4.1, 4.2: Toggle main_content_focus between RequestTab and
+            // WorkspaceSection without modifying active_collection_id, tabs,
+            // or active_tab.
+            state.workspace_panel.navigation_error = None;
+            match state.main_content_focus {
+                MainContentFocus::RequestTab => {
+                    state.main_content_focus = MainContentFocus::WorkspaceSection;
+                }
+                MainContentFocus::WorkspaceSection => {
+                    state.main_content_focus = MainContentFocus::RequestTab;
+                }
+            }
+            Task::none()
+        }
+        ActivityBarMessage::CollectionSelected(id) => {
+            // Req 2.3, 4.3: fijar la colección activa y refrescar tree, sin
+            // tocar las tabs del Composer (ni cuál está activa, ni su
+            // contenido no guardado).
+            // If currently in WorkspaceSection, switch back to RequestTab.
+            if state.main_content_focus == MainContentFocus::WorkspaceSection {
+                state.main_content_focus = MainContentFocus::RequestTab;
+            }
+            state.active_collection_id = Some(id);
+            // Reset tree state for the new collection
+            state.tree = TreeViewState::default();
+            Task::none()
+        }
+        ActivityBarMessage::ActivityPressed => {
+            // Req 8.1, 8.2, 8.3: Navigate to WorkspaceSection/History, or
+            // toggle back to RequestTab if already viewing History.
+            match state.main_content_focus {
+                MainContentFocus::RequestTab => {
+                    state.main_content_focus = MainContentFocus::WorkspaceSection;
+                    state.workspace_panel.active_section = WorkspacePanelSection::History;
+                }
+                MainContentFocus::WorkspaceSection
+                    if state.workspace_panel.active_section == WorkspacePanelSection::History =>
+                {
+                    state.main_content_focus = MainContentFocus::RequestTab;
+                }
+                MainContentFocus::WorkspaceSection => {
+                    // Already in workspace but in another section: navigate to History
+                    state.workspace_panel.active_section = WorkspacePanelSection::History;
+                }
+            }
+            Task::none()
+        }
+        ActivityBarMessage::CreateCollectionPressed => {
+            // Req 2.5: abrir el prompt de creación
+            state.create_collection_prompt = Some(CreateCollectionPromptState {
+                name_input: String::new(),
+                error: None,
+            });
+            Task::none()
+        }
+        ActivityBarMessage::CreateCollectionNameChanged(s) => {
+            if let Some(prompt) = &mut state.create_collection_prompt {
+                prompt.name_input = s;
+                // Clear previous error when user edits
+                prompt.error = None;
+            }
+            Task::none()
+        }
+        ActivityBarMessage::CreateCollectionConfirmed => {
+            let Some(prompt) = &state.create_collection_prompt else {
+                return Task::none();
+            };
+            let trimmed = prompt.name_input.trim().to_string();
+            if trimmed.is_empty() {
+                // Req 2.8: reject empty name, show error, keep prompt open
+                if let Some(prompt) = &mut state.create_collection_prompt {
+                    prompt.error = Some("La colección necesita un nombre.".to_string());
+                }
+                return Task::none();
+            }
+            // Valid name: dispatch async creation
+            let app_state = Arc::clone(&state.app_state);
+            let name = trimmed;
+            Task::perform(
+                async move {
+                    app_state
+                        .repository
+                        .create_collection(name)
+                        .await
+                        .map_err(|e| e.to_string())
+                },
+                |result| Message::ActivityBar(ActivityBarMessage::CollectionCreated(result)),
+            )
+        }
+        ActivityBarMessage::CreateCollectionCancelled => {
+            // Req 2.7: close prompt without creating anything
+            state.create_collection_prompt = None;
+            Task::none()
+        }
+        ActivityBarMessage::CollectionCreated(result) => {
+            match result {
+                Ok(summary) => {
+                    // Close the prompt
+                    state.create_collection_prompt = None;
+                    // Set as active collection
+                    let id = summary.id.clone();
+                    // Add to workspace collections as a new entry
+                    state.workspace.collections.push(
+                        midway_core::domain::workspace::CollectionWithRequests {
+                            collection: summary,
+                            folders: Vec::new(),
+                            requests: Vec::new(),
+                        },
+                    );
+                    state.active_collection_id = Some(id);
+                    // Reset tree for new (empty) collection
+                    state.tree = TreeViewState::default();
+                    state.session.dirty = true;
+                }
+                Err(msg) => {
+                    // Show error in prompt
+                    if let Some(prompt) = &mut state.create_collection_prompt {
+                        prompt.error = Some(msg);
+                    }
+                }
+            }
+            Task::none()
+        }
+    }
+}
+
+/// Actualiza el estado en respuesta a las acciones ABM del árbol.
+fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> Task<Message> {
+    match message {
+        WorkspaceCrudMessage::CreateFolderRequested { parent_folder_id } => {
+            let Some(collection_id) = state.active_collection_id.clone() else {
+                state.tree.error = Some("Seleccioná una colección antes de crear una carpeta.".to_string());
+                return Task::none();
+            };
+
+            let parent_name = parent_folder_id.as_deref().and_then(|folder_id| {
+                state
+                    .workspace
+                    .collections
+                    .iter()
+                    .find(|collection| collection.collection.id == collection_id)
+                    .and_then(|collection| collection.folders.iter().find(|folder| folder.id == folder_id))
+                    .map(|folder| folder.name.clone())
+            });
+            if parent_folder_id.is_some() && parent_name.is_none() {
+                state.tree.error = Some("No se pudo encontrar la carpeta padre.".to_string());
+                return Task::none();
+            }
+
+            state.workspace_crud_dialog = Some(WorkspaceCrudDialogState {
+                kind: WorkspaceCrudKind::CreateFolder {
+                    collection_id,
+                    parent_folder_id,
+                },
+                entity_name: parent_name.unwrap_or_else(|| "raíz de la colección".to_string()),
+                name_input: String::new(),
+                busy: false,
+                error: None,
+            });
+            state.tree.error = None;
+            Task::none()
+        }
+        ref message @ (WorkspaceCrudMessage::RenameCollectionRequested(ref collection_id)
+        | WorkspaceCrudMessage::DeleteCollectionRequested(ref collection_id)) => {
+            let collection_id = collection_id.clone();
+            let Some(collection) = state
+                .workspace
+                .collections
+                .iter()
+                .find(|collection| collection.collection.id == collection_id)
+            else {
+                state.tree.error = Some("No se pudo encontrar la colección.".to_string());
+                return Task::none();
+            };
+            let is_delete = matches!(
+                message,
+                WorkspaceCrudMessage::DeleteCollectionRequested(_)
+            );
+            if is_delete
+                && state
+                    .runner
+                    .as_ref()
+                    .is_some_and(|runner| runner.running.is_some())
+            {
+                state.tree.error = Some(
+                    "Cancelá o esperá a que termine la ejecución antes de borrar.".to_string(),
+                );
+                return Task::none();
+            }
+            let kind = if is_delete {
+                WorkspaceCrudKind::DeleteCollection { collection_id }
+            } else {
+                WorkspaceCrudKind::RenameCollection { collection_id }
+            };
+            let name = collection.collection.name.clone();
+            state.workspace_crud_dialog = Some(WorkspaceCrudDialogState {
+                kind,
+                entity_name: name.clone(),
+                name_input: name,
+                busy: false,
+                error: None,
+            });
+            state.tree.error = None;
+            Task::none()
+        }
+        ref message @ (WorkspaceCrudMessage::RenameFolderRequested(ref folder_id)
+        | WorkspaceCrudMessage::DeleteFolderRequested(ref folder_id)) => {
+            let folder_id = folder_id.clone();
+            let Some(folder) = state
+                .workspace
+                .collections
+                .iter()
+                .flat_map(|collection| collection.folders.iter())
+                .find(|folder| folder.id == folder_id)
+            else {
+                state.tree.error = Some("No se pudo encontrar la carpeta.".to_string());
+                return Task::none();
+            };
+            let is_delete = matches!(message, WorkspaceCrudMessage::DeleteFolderRequested(_));
+            if is_delete
+                && state
+                    .runner
+                    .as_ref()
+                    .is_some_and(|runner| runner.running.is_some())
+            {
+                state.tree.error = Some(
+                    "Cancelá o esperá a que termine la ejecución antes de borrar.".to_string(),
+                );
+                return Task::none();
+            }
+            let kind = if is_delete {
+                WorkspaceCrudKind::DeleteFolder { folder_id }
+            } else {
+                WorkspaceCrudKind::RenameFolder { folder_id }
+            };
+            let name = folder.name.clone();
+            state.workspace_crud_dialog = Some(WorkspaceCrudDialogState {
+                kind,
+                entity_name: name.clone(),
+                name_input: name,
+                busy: false,
+                error: None,
+            });
+            state.tree.error = None;
+            Task::none()
+        }
+        WorkspaceCrudMessage::DeleteRequestRequested(request_id) => {
+            if state
+                .runner
+                .as_ref()
+                .is_some_and(|runner| runner.running.is_some())
+            {
+                state.tree.error = Some(
+                    "Cancelá o esperá a que termine la ejecución antes de borrar.".to_string(),
+                );
+                return Task::none();
+            }
+            let Some(request) = state
+                .workspace
+                .collections
+                .iter()
+                .flat_map(|collection| collection.requests.iter())
+                .find(|request| request.id == request_id)
+            else {
+                state.tree.error = Some("No se pudo encontrar el request.".to_string());
+                return Task::none();
+            };
+            state.workspace_crud_dialog = Some(WorkspaceCrudDialogState {
+                kind: WorkspaceCrudKind::DeleteRequest { request_id },
+                entity_name: request.name.clone(),
+                name_input: request.name.clone(),
+                busy: false,
+                error: None,
+            });
+            state.tree.error = None;
+            Task::none()
+        }
+        WorkspaceCrudMessage::NameChanged(name) => {
+            if let Some(dialog) = state.workspace_crud_dialog.as_mut() {
+                if !dialog.busy {
+                    dialog.name_input = name;
+                    dialog.error = None;
+                }
+            }
+            Task::none()
+        }
+        WorkspaceCrudMessage::Confirmed => {
+            let Some(dialog) = state.workspace_crud_dialog.as_mut() else {
+                return Task::none();
+            };
+            if dialog.busy {
+                return Task::none();
+            }
+            let needs_name = matches!(
+                dialog.kind,
+                WorkspaceCrudKind::CreateFolder { .. }
+                    | WorkspaceCrudKind::RenameCollection { .. }
+                    | WorkspaceCrudKind::RenameFolder { .. }
+            );
+            let name = dialog.name_input.trim().to_string();
+            if needs_name && name.is_empty() {
+                dialog.error = Some("El nombre no puede quedar vacío.".to_string());
+                return Task::none();
+            }
+
+            dialog.busy = true;
+            dialog.error = None;
+            let kind = dialog.kind.clone();
+            let app_state = Arc::clone(&state.app_state);
+
+            Task::perform(
+                async move {
+                    match kind {
+                        WorkspaceCrudKind::CreateFolder {
+                            collection_id,
+                            parent_folder_id,
+                        } => {
+                            app_state
+                                .repository
+                                .create_folder(SaveFolderInput {
+                                    collection_id,
+                                    parent_folder_id,
+                                    name,
+                                })
+                                .await
+                                .map(|_| ())
+                        }
+                        WorkspaceCrudKind::RenameCollection { collection_id } => app_state
+                            .repository
+                            .rename_collection(collection_id, name)
+                            .await
+                            .map(|_| ()),
+                        WorkspaceCrudKind::DeleteCollection { collection_id } => {
+                            app_state.repository.delete_collection(collection_id).await
+                        }
+                        WorkspaceCrudKind::RenameFolder { folder_id } => app_state
+                            .repository
+                            .rename_folder(folder_id, name)
+                            .await
+                            .map(|_| ()),
+                        WorkspaceCrudKind::DeleteFolder { folder_id } => {
+                            app_state.repository.delete_folder(folder_id).await
+                        }
+                        WorkspaceCrudKind::DeleteRequest { request_id } => {
+                            app_state.repository.delete_request(request_id).await
+                        }
+                    }
+                    .map_err(|error| error.to_string())?;
+
+                    app_state
+                        .repository
+                        .workspace_snapshot(HISTORY_LIMIT)
+                        .await
+                        .map_err(|error| error.to_string())
+                },
+                |result| Message::WorkspaceCrud(WorkspaceCrudMessage::Completed(result)),
+            )
+        }
+        WorkspaceCrudMessage::Cancelled => {
+            if state
+                .workspace_crud_dialog
+                .as_ref()
+                .is_some_and(|dialog| !dialog.busy)
+            {
+                state.workspace_crud_dialog = None;
+            }
+            Task::none()
+        }
+        WorkspaceCrudMessage::Completed(result) => {
+            match result {
+                Ok(workspace) => reconcile_workspace_after_crud(state, workspace),
+                Err(error) => {
+                    if let Some(dialog) = state.workspace_crud_dialog.as_mut() {
+                        dialog.busy = false;
+                        dialog.error = Some(error);
+                    }
+                }
+            }
+            Task::none()
+        }
+    }
+}
+
+/// Reemplaza el snapshot y elimina toda referencia de UI a entidades borradas.
+fn reconcile_workspace_after_crud(state: &mut Midway, workspace: WorkspaceSnapshot) {
+    let old_request_ids: HashSet<String> = state
+        .workspace
+        .collections
+        .iter()
+        .flat_map(|collection| collection.requests.iter().map(|request| request.id.clone()))
+        .collect();
+    let surviving_request_ids: HashSet<String> = workspace
+        .collections
+        .iter()
+        .flat_map(|collection| collection.requests.iter().map(|request| request.id.clone()))
+        .collect();
+    let deleted_request_ids: HashSet<String> = old_request_ids
+        .difference(&surviving_request_ids)
+        .cloned()
+        .collect();
+
+    let previous_active_collection = state.active_collection_id.clone();
+    let previous_active_index = state.active_tab;
+    let previous_active_tab_id = previous_active_index
+        .and_then(|index| state.tabs.get(index))
+        .map(|tab| tab.id.clone());
+
+    state.tabs.retain(|tab| {
+        !tab
+            .draft
+            .id
+            .as_ref()
+            .is_some_and(|request_id| deleted_request_ids.contains(request_id))
+    });
+    state.closed_tabs.retain(|tab| {
+        !tab
+            .draft
+            .id
+            .as_ref()
+            .is_some_and(|request_id| deleted_request_ids.contains(request_id))
+    });
+
+    if state.tabs.is_empty() {
+        state.tabs.push(RequestTabState::blank());
+        state.active_tab = Some(0);
+    } else {
+        state.active_tab = previous_active_tab_id
+            .as_deref()
+            .and_then(|tab_id| state.tabs.iter().position(|tab| tab.id == tab_id))
+            .or_else(|| Some(previous_active_index.unwrap_or(0).min(state.tabs.len() - 1)));
+    }
+
+    let open_tab_ids: HashSet<String> = state.tabs.iter().map(|tab| tab.id.clone()).collect();
+    if state
+        .save_request_prompt
+        .as_ref()
+        .is_some_and(|prompt| !open_tab_ids.contains(&prompt.tab_id))
+    {
+        state.save_request_prompt = None;
+    }
+    if state
+        .unsaved_changes_prompt
+        .as_ref()
+        .is_some_and(|prompt| !open_tab_ids.contains(&prompt.tab_id))
+    {
+        state.unsaved_changes_prompt = None;
+    }
+
+    let surviving_folder_ids: HashSet<String> = workspace
+        .collections
+        .iter()
+        .flat_map(|collection| collection.folders.iter().map(|folder| folder.id.clone()))
+        .collect();
+    state
+        .tree
+        .collapsed
+        .retain(|folder_id| surviving_folder_ids.contains(folder_id));
+    if let Some(snapshot) = state.tree.collapsed_snapshot.as_mut() {
+        snapshot.retain(|folder_id| surviving_folder_ids.contains(folder_id));
+    }
+
+    state.active_collection_id = resolve_startup_collection(
+        &workspace.collections,
+        previous_active_collection.as_deref(),
+    );
+    if state.active_collection_id != previous_active_collection {
+        state.tree = TreeViewState::default();
+    } else {
+        state.tree.error = None;
+    }
+    if state.active_collection_id.is_none() {
+        state.top_bar_mode = TopBarMode::Debug;
+    }
+
+    state.workspace = workspace;
+    state.workspace_crud_dialog = None;
+    state.session.dirty = true;
+}
+
+/// Actualiza el estado en respuesta a un `TopBarMessage` (Tarea 12.1).
+///
+/// `ModeSelected(mode)`:
+/// - Si mode == Test y no hay `active_collection_id`: se ignora (la tab está
+///   deshabilitada, no debería llegar, pero por seguridad se descarta).
+/// - En caso contrario: fija `top_bar_mode = mode`.
+fn update_top_bar(state: &mut Midway, message: TopBarMessage) -> Task<Message> {
+    match message {
+        TopBarMessage::ModeSelected(mode) => {
+            if mode == TopBarMode::Test && state.active_collection_id.is_none() {
+                // Tab Test disabled without active collection (Req 6.7) — ignore.
+                return Task::none();
+            }
+            state.top_bar_mode = mode;
+            // Selecting a mode tab always brings focus back to the request/test
+            // area (away from WorkspaceSection if that was showing).
+            state.main_content_focus = MainContentFocus::RequestTab;
+            Task::none()
+        }
+        TopBarMessage::BreadcrumbRootClicked => {
+            // Req 3.5: Navigate to initial state (RequestTab + Debug mode).
+            state.main_content_focus = MainContentFocus::RequestTab;
+            state.top_bar_mode = TopBarMode::Debug;
+            Task::none()
+        }
+        TopBarMessage::BackToComposer => {
+            // Req 4.5: Back navigation from WorkspaceSection to RequestTab.
+            state.main_content_focus = MainContentFocus::RequestTab;
+            Task::none()
+        }
+    }
+}
+
+/// Constantes de redimensionamiento del tree pane.
+const TREE_PANE_MIN_WIDTH: f32 = 150.0;
+const TREE_PANE_MAX_WIDTH: f32 = 500.0;
+const TREE_DIVIDER_HIT_WIDTH: f32 = 10.0;
+const DEBUG_DIVIDER_HIT_WIDTH: f32 = 10.0;
+const DEBUG_PANE_MIN_WIDTH: f32 = 220.0;
+const DEBUG_REQUEST_PANE_MAX_WIDTH: f32 = 1_200.0;
+/// Ancho fijo del Activity_Bar (no redimensionable).
+const ACTIVITY_BAR_WIDTH: f32 = 48.0;
+
+fn tree_pane_width_from_cursor(cursor_x: f32) -> f32 {
+    (cursor_x - ACTIVITY_BAR_WIDTH).clamp(TREE_PANE_MIN_WIDTH, TREE_PANE_MAX_WIDTH)
+}
+
+fn request_panel_width_from_cursor(cursor_x: f32, tree_pane_width: f32) -> f32 {
+    (cursor_x - ACTIVITY_BAR_WIDTH - tree_pane_width - TREE_DIVIDER_HIT_WIDTH)
+        .clamp(DEBUG_PANE_MIN_WIDTH, DEBUG_REQUEST_PANE_MAX_WIDTH)
+}
+
+fn request_panel_width_for_available(stored_width: f32, available_width: f32) -> f32 {
+    let max_width = (available_width - DEBUG_DIVIDER_HIT_WIDTH - DEBUG_PANE_MIN_WIDTH)
+        .max(DEBUG_PANE_MIN_WIDTH);
+    stored_width.clamp(DEBUG_PANE_MIN_WIDTH, max_width)
+}
+
+#[cfg(test)]
+mod panel_resize_tests {
+    use super::*;
+
+    #[test]
+    fn tree_pane_width_tracks_cursor_after_activity_bar() {
+        assert_eq!(tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + 320.0), 320.0);
+    }
+
+    #[test]
+    fn tree_pane_width_is_clamped_to_supported_range() {
+        assert_eq!(tree_pane_width_from_cursor(0.0), TREE_PANE_MIN_WIDTH);
+        assert_eq!(
+            tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + TREE_PANE_MAX_WIDTH + 100.0),
+            TREE_PANE_MAX_WIDTH
+        );
+    }
+
+    #[test]
+    fn panel_resize_start_drag_and_end_updates_state() {
+        let mut state = super::tests::build_test_midway(create_blank_draft());
+
+        let _ = update_panel_resize(&mut state, PanelResizeMessage::TreeDividerDragStarted);
+        assert_eq!(state.panel_dragging, Some(PanelDragState::TreeMain));
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerDragged(ACTIVITY_BAR_WIDTH + 360.0),
+        );
+        assert_eq!(state.session.panel_sizes.workspace_panel_width, 360.0);
+        assert!(state.session.dirty);
+
+        let _ = update_panel_resize(&mut state, PanelResizeMessage::DividerDragEnded);
+        assert!(state.panel_dragging.is_none());
+    }
+
+    #[test]
+    fn request_response_resize_tracks_cursor_after_left_panels() {
+        let mut state = super::tests::build_test_midway(create_blank_draft());
+        state.session.panel_sizes.workspace_panel_width = 300.0;
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::RequestResponseDividerDragStarted,
+        );
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerDragged(
+                ACTIVITY_BAR_WIDTH + 300.0 + TREE_DIVIDER_HIT_WIDTH + 420.0,
+            ),
+        );
+
+        assert_eq!(state.panel_dragging, Some(PanelDragState::RequestResponse));
+        assert_eq!(state.session.panel_sizes.request_panel_width, 420.0);
+        assert!(state.session.dirty);
+    }
+
+    #[test]
+    fn request_panel_width_keeps_both_panes_usable() {
+        assert_eq!(
+            request_panel_width_for_available(900.0, 700.0),
+            700.0 - DEBUG_DIVIDER_HIT_WIDTH - DEBUG_PANE_MIN_WIDTH,
+        );
+        assert_eq!(
+            request_panel_width_for_available(10.0, 700.0),
+            DEBUG_PANE_MIN_WIDTH,
+        );
+    }
+
+    #[test]
+    fn global_mouse_events_map_to_drag_messages() {
+        let moved = panel_resize_message_for_event(&iced::Event::Mouse(
+            iced::mouse::Event::CursorMoved {
+                position: iced::Point::new(444.0, 120.0),
+            },
+        ));
+        assert!(matches!(
+            moved,
+            Some(PanelResizeMessage::DividerDragged(x)) if x == 444.0
+        ));
+
+        let released = panel_resize_message_for_event(&iced::Event::Mouse(
+            iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
+        ));
+        assert!(matches!(
+            released,
+            Some(PanelResizeMessage::DividerDragEnded)
+        ));
+
+        let left_window = panel_resize_message_for_event(&iced::Event::Mouse(
+            iced::mouse::Event::CursorLeft,
+        ));
+        assert!(matches!(
+            left_window,
+            Some(PanelResizeMessage::DividerDragEnded)
+        ));
+    }
+
+    #[test]
+    fn panel_resize_ignores_cursor_movement_without_active_drag() {
+        let mut state = super::tests::build_test_midway(create_blank_draft());
+        let initial_width = state.session.panel_sizes.workspace_panel_width;
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerDragged(ACTIVITY_BAR_WIDTH + 400.0),
+        );
+
+        assert_eq!(state.session.panel_sizes.workspace_panel_width, initial_width);
+        assert!(!state.session.dirty);
+    }
+
+    #[test]
+    fn divider_hover_tracks_only_the_current_handle() {
+        let mut state = super::tests::build_test_midway(create_blank_draft());
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerHovered(PanelDragState::TreeMain),
+        );
+        assert_eq!(state.panel_hovered, Some(PanelDragState::TreeMain));
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerUnhovered(PanelDragState::RequestResponse),
+        );
+        assert_eq!(state.panel_hovered, Some(PanelDragState::TreeMain));
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerUnhovered(PanelDragState::TreeMain),
+        );
+        assert!(state.panel_hovered.is_none());
+    }
+}
+
+/// Actualiza el estado en respuesta a un `PanelResizeMessage`.
+///
+/// Lógica de arrastre directa: el ancho del tree pane es simplemente
+/// `cursor_x - ACTIVITY_BAR_WIDTH`, clampeado al rango permitido.
+fn update_panel_resize(state: &mut Midway, message: PanelResizeMessage) -> Task<Message> {
+    match message {
+        PanelResizeMessage::TreeDividerDragStarted => {
+            state.panel_dragging = Some(PanelDragState::TreeMain);
+            Task::none()
+        }
+        PanelResizeMessage::RequestResponseDividerDragStarted => {
+            state.panel_dragging = Some(PanelDragState::RequestResponse);
+            Task::none()
+        }
+        PanelResizeMessage::DividerHovered(divider) => {
+            state.panel_hovered = Some(divider);
+            Task::none()
+        }
+        PanelResizeMessage::DividerUnhovered(divider) => {
+            if state.panel_hovered == Some(divider) {
+                state.panel_hovered = None;
+            }
+            Task::none()
+        }
+        PanelResizeMessage::DividerDragged(current_x) => {
+            match state.panel_dragging {
+                Some(PanelDragState::TreeMain) => {
+                    state.session.panel_sizes.workspace_panel_width =
+                        tree_pane_width_from_cursor(current_x);
+                    state.session.dirty = true;
+                }
+                Some(PanelDragState::RequestResponse) => {
+                    state.session.panel_sizes.request_panel_width = request_panel_width_from_cursor(
+                        current_x,
+                        state.session.panel_sizes.workspace_panel_width,
+                    );
+                    state.session.dirty = true;
+                }
+                None => {}
+            }
+            Task::none()
+        }
+        PanelResizeMessage::DividerDragEnded => {
+            state.panel_dragging = None;
+            Task::none()
+        }
+    }
+}
+
+/// Req 6.8: Si la colección activa ya no existe en el workspace y el modo
+/// actual es Test, cae automáticamente a Debug. También limpia
+/// `active_collection_id` si la colección referenciada fue eliminada.
+fn enforce_top_bar_mode_after_collection_change(state: &mut Midway) {
+    if let Some(ref active_id) = state.active_collection_id {
+        let still_exists = state
+            .workspace
+            .collections
+            .iter()
+            .any(|c| c.collection.id == *active_id);
+        if !still_exists {
+            state.active_collection_id = None;
+            if state.top_bar_mode == TopBarMode::Test {
+                state.top_bar_mode = TopBarMode::Debug;
+            }
+        }
+    }
+}
+
 /// Construye el `SessionSnapshot` a persistir a partir del estado actual de
 /// `Midway` (Tarea 11.4). El `id` de tab activa se resuelve a partir del
 /// índice `active_tab` actual; `closed_tabs` refleja el stack de tabs
@@ -1703,7 +2896,9 @@ fn build_session_snapshot(state: &Midway) -> crate::session::SessionSnapshot {
         open_tabs,
         closed_tabs,
         panel_sizes: state.session.panel_sizes.clone(),
+        theme_mode: state.theme_mode,
         saved_at: chrono::Utc::now().to_rfc3339(),
+        active_collection_id: state.active_collection_id.clone(),
     }
 }
 
@@ -1734,6 +2929,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             close_tab_or_prompt_unsaved_changes(state, tab_id);
             return Task::none();
         }
+        RequestComposerMessage::TabSelected { index } => {
+            if index < state.tabs.len() {
+                state.active_tab = Some(index);
+                state.main_content_focus = MainContentFocus::RequestTab;
+            }
+            return Task::none();
+        }
         RequestComposerMessage::ClosedTabReopened => {
             handle_closed_tab_reopened(state);
             return Task::none();
@@ -1753,6 +2955,68 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             // Cancelar: descarta el aviso sin cerrar la tab ni mutar su
             // draft/saved_draft de ninguna forma (Requisito 6.6).
             state.unsaved_changes_prompt = None;
+            return Task::none();
+        }
+        RequestComposerMessage::SaveRequested => {
+            open_save_request_prompt(state);
+            return Task::none();
+        }
+        RequestComposerMessage::SaveNameChanged(name) => {
+            if let Some(prompt) = state.save_request_prompt.as_mut() {
+                prompt.name_input = name;
+                prompt.error = None;
+            }
+            return Task::none();
+        }
+        RequestComposerMessage::SaveCollectionChanged(collection_id) => {
+            if state
+                .workspace
+                .collections
+                .iter()
+                .any(|collection| collection.collection.id == collection_id)
+            {
+                if let Some(prompt) = state.save_request_prompt.as_mut() {
+                    prompt.collection_id = Some(collection_id);
+                    prompt.folder_id = None;
+                    prompt.error = None;
+                }
+            }
+            return Task::none();
+        }
+        RequestComposerMessage::SaveFolderChanged(folder_id) => {
+            let is_valid = state.save_request_prompt.as_ref().is_some_and(|prompt| {
+                folder_id.is_none()
+                    || state.workspace.collections.iter().any(|collection| {
+                        Some(collection.collection.id.as_str()) == prompt.collection_id.as_deref()
+                            && collection
+                                .folders
+                                .iter()
+                                .any(|folder| Some(folder.id.as_str()) == folder_id.as_deref())
+                    })
+            });
+            if is_valid {
+                if let Some(prompt) = state.save_request_prompt.as_mut() {
+                    prompt.folder_id = folder_id;
+                    prompt.error = None;
+                }
+            }
+            return Task::none();
+        }
+        RequestComposerMessage::SaveConfirmed => {
+            return handle_save_request_confirmed(state);
+        }
+        RequestComposerMessage::SaveCancelled => {
+            if state
+                .save_request_prompt
+                .as_ref()
+                .is_some_and(|prompt| !prompt.saving)
+            {
+                state.save_request_prompt = None;
+            }
+            return Task::none();
+        }
+        RequestComposerMessage::SaveCompleted(result) => {
+            handle_save_request_completed(state, result);
             return Task::none();
         }
         _ => {}
@@ -2062,15 +3326,109 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
                 .retain(|assertion| assertion.id != assertion_id);
             Task::none()
         }
+        // Tab Body: `pick_list` de modo (None/Json/Text/FormData) sobre
+        // `draft.body.mode`. Al entrar a Json o Text, se repuebla el
+        // `Text_Editor_Component` con el `draft.body.value` vigente, para
+        // que refleje contenido ya existente (p. ej. importado por cURL o
+        // restaurado de sesión) en lugar de mostrarlo vacío.
+        RequestComposerMessage::BodyModeChanged(mode) => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            active_tab.draft.body.mode = mode;
+            if matches!(mode, BodyMode::Json | BodyMode::Text) {
+                active_tab.body_editor = TextEditorState::new(&active_tab.draft.body.value);
+            }
+            Task::none()
+        }
+        // Aplica la acción de edición al `Content` del editor y refleja el
+        // texto resultante en `draft.body.value` (única fuente persistida;
+        // `Text_Editor_Component` es puramente de presentación/edición).
+        RequestComposerMessage::BodyTextAction(action) => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            active_tab.body_editor.update(action);
+            active_tab.draft.body.value = active_tab.body_editor.content.text();
+            Task::none()
+        }
+        RequestComposerMessage::FormDataRowAdded => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            active_tab.draft.body.form_data.push(FormDataRow {
+                id: uuid::Uuid::new_v4().to_string(),
+                key: String::new(),
+                value: String::new(),
+                enabled: true,
+                kind: FormDataFieldKind::Text,
+                file_name: None,
+            });
+            Task::none()
+        }
+        RequestComposerMessage::FormDataRowKeyChanged { row_id, key } => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+                row.key = key;
+            }
+            Task::none()
+        }
+        RequestComposerMessage::FormDataRowValueChanged { row_id, value } => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+                row.value = value;
+            }
+            Task::none()
+        }
+        RequestComposerMessage::FormDataRowEnabledToggled { row_id } => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+                row.enabled = !row.enabled;
+            }
+            Task::none()
+        }
+        RequestComposerMessage::FormDataRowKindChanged { row_id, kind } => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+                row.kind = kind;
+                // Al cambiar de tipo se descarta el nombre de archivo
+                // previamente asociado (solo aplica a campos File).
+                row.file_name = None;
+            }
+            Task::none()
+        }
+        RequestComposerMessage::FormDataRowRemoved { row_id } => {
+            let Some(active_tab) = state.tabs.get_mut(active_index) else {
+                return Task::none();
+            };
+            active_tab.draft.body.form_data.retain(|row| row.id != row_id);
+            Task::none()
+        }
         RequestComposerMessage::UrlPasted(_)
         | RequestComposerMessage::SendCompleted { .. }
         | RequestComposerMessage::PreviewLoaded { .. }
         | RequestComposerMessage::TabClosed { .. }
+        | RequestComposerMessage::TabSelected { .. }
         | RequestComposerMessage::ClosedTabReopened
         | RequestComposerMessage::UnsavedChangesSaveRequested
         | RequestComposerMessage::UnsavedChangesSaveCompleted(_)
         | RequestComposerMessage::UnsavedChangesDiscardRequested
-        | RequestComposerMessage::UnsavedChangesCancelRequested => {
+        | RequestComposerMessage::UnsavedChangesCancelRequested
+        | RequestComposerMessage::SaveRequested
+        | RequestComposerMessage::SaveNameChanged(_)
+        | RequestComposerMessage::SaveCollectionChanged(_)
+        | RequestComposerMessage::SaveFolderChanged(_)
+        | RequestComposerMessage::SaveConfirmed
+        | RequestComposerMessage::SaveCancelled
+        | RequestComposerMessage::SaveCompleted(_) => {
             unreachable!("manejado arriba")
         }
     }
@@ -2379,6 +3737,7 @@ fn handle_url_pasted(state: &mut Midway, pasted_text: String) {
             if active_tab_is_empty {
                 // Criterio 2.7: tab activa vacía -> sobrescribir sus campos.
                 let active_tab = &mut state.tabs[active_index];
+                active_tab.body_editor = TextEditorState::new(&new_draft.body.value);
                 active_tab.draft = new_draft;
                 active_tab.curl_paste_error = None;
             } else {
@@ -2471,6 +3830,203 @@ fn handle_closed_tab_reopened(state: &mut Midway) {
     state.tabs.push(RequestTabState::from_snapshot(snapshot));
     state.active_tab = Some(state.tabs.len() - 1);
     state.session.dirty = true;
+}
+
+/// Devuelve la colección y carpeta actuales de un request persistido.
+fn saved_request_location(
+    workspace: &WorkspaceSnapshot,
+    request_id: Option<&str>,
+) -> Option<(String, Option<String>)> {
+    let request_id = request_id?;
+    workspace.collections.iter().find_map(|collection| {
+        collection
+            .requests
+            .iter()
+            .find(|request| request.id == request_id)
+            .map(|request| {
+                (
+                    collection.collection.id.clone(),
+                    request.folder_id.clone(),
+                )
+            })
+    })
+}
+
+/// Abre el diálogo de guardado con la ubicación actual o la colección activa.
+fn open_save_request_prompt(state: &mut Midway) {
+    let Some(active_index) = state.active_tab else {
+        return;
+    };
+    let Some(tab) = state.tabs.get(active_index) else {
+        return;
+    };
+
+    let existing_location = saved_request_location(&state.workspace, tab.draft.id.as_deref());
+    let collection_id = existing_location
+        .as_ref()
+        .map(|(collection_id, _)| collection_id.clone())
+        .or_else(|| {
+            state.active_collection_id.as_ref().filter(|active_id| {
+                state
+                    .workspace
+                    .collections
+                    .iter()
+                    .any(|collection| collection.collection.id == **active_id)
+            }).cloned()
+        })
+        .or_else(|| {
+            state
+                .workspace
+                .collections
+                .first()
+                .map(|collection| collection.collection.id.clone())
+        });
+    let folder_id = existing_location.and_then(|(_, folder_id)| folder_id);
+
+    state.save_request_prompt = Some(SaveRequestPromptState {
+        tab_id: tab.id.clone(),
+        name_input: tab.draft.name.clone(),
+        collection_id,
+        folder_id,
+        saving: false,
+        error: None,
+    });
+}
+
+fn handle_save_request_confirmed(state: &mut Midway) -> Task<Message> {
+    let Some(prompt) = state.save_request_prompt.as_ref() else {
+        return Task::none();
+    };
+    if prompt.saving {
+        return Task::none();
+    }
+
+    let tab_id = prompt.tab_id.clone();
+    let name = prompt.name_input.trim().to_string();
+    let collection_id = prompt.collection_id.clone();
+    let folder_id = prompt.folder_id.clone();
+
+    if name.is_empty() {
+        if let Some(prompt) = state.save_request_prompt.as_mut() {
+            prompt.error = Some("El request necesita un nombre.".to_string());
+        }
+        return Task::none();
+    }
+
+    let Some(collection_id) = collection_id else {
+        if let Some(prompt) = state.save_request_prompt.as_mut() {
+            prompt.error = Some("Seleccioná una colección de destino.".to_string());
+        }
+        return Task::none();
+    };
+
+    let Some(collection) = state
+        .workspace
+        .collections
+        .iter()
+        .find(|collection| collection.collection.id == collection_id)
+    else {
+        if let Some(prompt) = state.save_request_prompt.as_mut() {
+            prompt.error = Some("La colección seleccionada ya no existe.".to_string());
+        }
+        return Task::none();
+    };
+
+    if folder_id.as_ref().is_some_and(|folder_id| {
+        !collection.folders.iter().any(|folder| folder.id == *folder_id)
+    }) {
+        if let Some(prompt) = state.save_request_prompt.as_mut() {
+            prompt.error = Some("La carpeta seleccionada ya no existe.".to_string());
+        }
+        return Task::none();
+    }
+
+    let Some(tab) = state.tabs.iter().find(|tab| tab.id == tab_id) else {
+        state.save_request_prompt = None;
+        return Task::none();
+    };
+
+    let mut draft = tab.draft.clone();
+    draft.name = name;
+
+    if let Some(prompt) = state.save_request_prompt.as_mut() {
+        prompt.saving = true;
+        prompt.error = None;
+    }
+
+    let app_state = Arc::clone(&state.app_state);
+    Task::perform(
+        persist_request_from_composer(
+            app_state,
+            tab_id,
+            draft,
+            collection_id,
+            folder_id,
+        ),
+        |result| Message::RequestComposer(RequestComposerMessage::SaveCompleted(result)),
+    )
+}
+
+async fn persist_request_from_composer(
+    app_state: Arc<AppState>,
+    tab_id: String,
+    draft: RequestDraft,
+    collection_id: String,
+    folder_id: Option<String>,
+) -> Result<RequestSaveOutcome, String> {
+    let saved_record = app_state
+        .repository
+        .save_request(SaveRequestInput {
+            request_id: draft.id.clone(),
+            collection_id: collection_id.clone(),
+            folder_id,
+            draft,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let workspace = app_state
+        .repository
+        .export_full_snapshot()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(RequestSaveOutcome {
+        tab_id,
+        saved_draft: saved_record.draft,
+        workspace,
+        collection_id,
+    })
+}
+
+fn handle_save_request_completed(
+    state: &mut Midway,
+    result: Result<RequestSaveOutcome, String>,
+) {
+    match result {
+        Ok(outcome) => {
+            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == outcome.tab_id) {
+                tab.draft = outcome.saved_draft.clone();
+                tab.saved_draft = Some(outcome.saved_draft);
+            }
+
+            let collection_changed = state.active_collection_id.as_deref()
+                != Some(outcome.collection_id.as_str());
+            state.workspace = outcome.workspace;
+            state.active_collection_id = Some(outcome.collection_id);
+            if collection_changed {
+                state.tree = TreeViewState::default();
+            }
+            state.save_request_prompt = None;
+            state.session.dirty = true;
+        }
+        Err(error) => {
+            if let Some(prompt) = state.save_request_prompt.as_mut() {
+                prompt.saving = false;
+                prompt.error = Some(error);
+            }
+        }
+    }
 }
 
 /// Nombre de la collection usada como destino por defecto al Guardar
@@ -2585,6 +4141,7 @@ async fn persist_tab_draft(
         .save_request(SaveRequestInput {
             request_id: draft.id.clone(),
             collection_id,
+            folder_id: None,
             draft,
         })
         .await
@@ -2637,15 +4194,15 @@ fn handle_unsaved_changes_discard_requested(state: &mut Midway) {
 /// `iced::keyboard::listen()` subscription de `subscription()`.
 fn update_keyboard(state: &mut Midway, message: KeyboardMessage) -> Task<Message> {
     match message {
-        // Ver doc de `KeyboardMessage::SaveRequested`: no existe todavía
-        // un flujo de "guardar el draft de la tab activa en una
-        // collection" al que delegar; el shortcut sí despacha el mensaje
-        // (no se descarta en la subscription), pero su handler es un
-        // no-op documentado hasta que ese flujo exista.
-        KeyboardMessage::SaveRequested => Task::none(),
+        KeyboardMessage::SaveRequested => {
+            open_save_request_prompt(state);
+            Task::none()
+        }
         KeyboardMessage::NewBlankTabRequested => {
             state.tabs.push(RequestTabState::blank());
             state.active_tab = Some(state.tabs.len() - 1);
+            state.main_content_focus = MainContentFocus::RequestTab;
+            state.top_bar_mode = TopBarMode::Debug;
             state.session.dirty = true;
             Task::none()
         }
@@ -2667,6 +4224,33 @@ fn update_keyboard(state: &mut Midway, message: KeyboardMessage) -> Task<Message
             Task::none()
         }
         KeyboardMessage::EscapePressed => {
+            if state.tree.request_drag.take().is_some() {
+                return Task::none();
+            }
+
+            if state
+                .workspace_crud_dialog
+                .as_ref()
+                .is_some_and(|dialog| !dialog.busy)
+            {
+                state.workspace_crud_dialog = None;
+                return Task::none();
+            }
+
+            if state
+                .save_request_prompt
+                .as_ref()
+                .is_some_and(|prompt| !prompt.saving)
+            {
+                state.save_request_prompt = None;
+                return Task::none();
+            }
+
+            if state.create_collection_prompt.is_some() {
+                state.create_collection_prompt = None;
+                return Task::none();
+            }
+
             // Precedencia documentada en `KeyboardMessage::EscapePressed`:
             // el Command Palette, si está abierto, se cierra primero.
             if state.palette.is_open {
@@ -2746,6 +4330,14 @@ fn update_workspace(state: &mut Midway, message: WorkspaceMessage) -> Task<Messa
         // posteriores de la sección History no repiten la llamada
         // (`history_loaded`), salvo que se dispare explícitamente de nuevo.
         WorkspaceMessage::SectionSelected(section) => {
+            // Req 11.11: successful navigation sets active_section and
+            // main_content_focus = WorkspaceSection.
+            // Req 11.10: if the section is somehow unavailable, show error
+            // and maintain the current view. In practice, section navigation
+            // is synchronous and can't fail for the 5 defined sections, but
+            // we guard against unexpected states.
+            state.workspace_panel.navigation_error = None;
+            state.main_content_focus = MainContentFocus::WorkspaceSection;
             state.workspace_panel.active_section = section;
             if section == WorkspacePanelSection::Diagnostics {
                 state.crash_log = diagnostics::read_crash_records();
@@ -3064,6 +4656,15 @@ fn handle_history_requested(state: &mut Midway) -> Task<Message> {
     })
 }
 
+/// Carga inicial del workspace para que colecciones y requests estén
+/// disponibles desde el arranque, sin visitar History primero.
+pub(crate) fn initial_workspace_load(state: &Midway) -> Task<Message> {
+    let app_state = Arc::clone(&state.app_state);
+    Task::perform(load_workspace_snapshot(app_state), |result| {
+        Message::Workspace(WorkspaceMessage::WorkspaceSnapshotLoaded(result))
+    })
+}
+
 /// Cuerpo async de la carga del snapshot completo del workspace (Tarea
 /// 7.11): delega directamente en
 /// `infra::sqlite_repository::SqliteRepository::workspace_snapshot`, con
@@ -3087,8 +4688,31 @@ fn handle_workspace_snapshot_loaded(state: &mut Midway, result: Result<Workspace
 
     match result {
         Ok(snapshot) => {
+            for tab in state.tabs.iter_mut() {
+                let Some(request_id) = tab.draft.id.as_deref() else {
+                    continue;
+                };
+                tab.saved_draft = snapshot
+                    .collections
+                    .iter()
+                    .flat_map(|collection| collection.requests.iter())
+                    .find(|request| request.id == request_id)
+                    .map(|request| request.draft.clone());
+            }
             state.workspace = snapshot;
             state.workspace_panel.history_loaded = true;
+
+            // Resolve active collection after workspace loads (Requirements
+            // 6.1-6.4): use the current active_collection_id (which may hold
+            // the session-restored value) as the session_id hint.
+            let session_id = state.active_collection_id.clone();
+            state.active_collection_id = resolve_startup_collection(
+                &state.workspace.collections,
+                session_id.as_deref(),
+            );
+
+            // Req 6.8: fall back to Debug if active collection was removed.
+            enforce_top_bar_mode_after_collection_change(state);
         }
         Err(message) => {
             state.workspace_panel.history_error = Some(message);
@@ -3169,7 +4793,7 @@ async fn export_workspace_data(
                 .await
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("No existe la collection {collection_id}"))?;
-            serde_json::to_string_pretty(&export_postman_collection(&collection)).map_err(|error| error.to_string())?
+            serde_json::to_string_pretty(&export_postman_collection(&collection).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?
         }
     };
 
@@ -3329,6 +4953,7 @@ async fn import_workspace_data(
                         .save_request(SaveRequestInput {
                             request_id: None,
                             collection_id: created_collection.id.clone(),
+                            folder_id: None,
                             draft: request.draft,
                         })
                         .await
@@ -3347,6 +4972,7 @@ async fn import_workspace_data(
                 &app_state,
                 parsed.collection_name,
                 parsed.variables,
+                parsed.folders,
                 parsed.requests,
                 &mut existing_collection_names,
                 &mut existing_request_names,
@@ -3356,11 +4982,16 @@ async fn import_workspace_data(
         }
         WorkspaceImportFormat::OpenApiV3 => {
             let parsed = import_openapi_document(&payload).map_err(|error| error.to_string())?;
+            let imported_requests = parsed.requests.into_iter().map(|draft| ImportedRequest {
+                draft,
+                folder_id: None,
+            }).collect();
             import_http_collection(
                 &app_state,
                 parsed.collection_name,
                 parsed.variables,
-                parsed.requests,
+                Vec::new(),
+                imported_requests,
                 &mut existing_collection_names,
                 &mut existing_request_names,
                 &mut existing_environment_names,
@@ -3392,7 +5023,8 @@ async fn import_http_collection(
     app_state: &Arc<AppState>,
     default_collection_name: String,
     variables: Vec<KeyValueRow>,
-    requests: Vec<RequestDraft>,
+    folders: Vec<Folder>,
+    requests: Vec<ImportedRequest>,
     existing_collection_names: &mut HashSet<String>,
     existing_request_names: &mut HashSet<String>,
     existing_environment_names: &mut HashSet<String>,
@@ -3406,19 +5038,32 @@ async fn import_http_collection(
         .await
         .map_err(|error| error.to_string())?;
 
+    // Persist folders, assigning the real collection_id.
+    let collection_id_for_folders = collection.id.clone();
+    let folders_clone = folders.clone();
+    app_state
+        .repository
+        .insert_imported_folders(collection_id_for_folders, folders_clone)
+        .await
+        .map_err(|error| error.to_string())?;
+
     let mut requests_imported = 0_u64;
-    for mut draft in requests {
+    for entry in requests {
+        let mut draft = entry.draft;
         draft.name = unique_name_against(existing_request_names, &draft.name);
         existing_request_names.insert(draft.name.clone());
+
         app_state
             .repository
             .save_request(SaveRequestInput {
                 request_id: None,
                 collection_id: collection.id.clone(),
+                folder_id: entry.folder_id.clone(),
                 draft,
             })
             .await
             .map_err(|error| error.to_string())?;
+
         requests_imported += 1;
     }
 
@@ -3482,6 +5127,8 @@ fn handle_import_completed(state: &mut Midway, result: Result<(WorkspaceSnapshot
             state.workspace_panel.import_form.payload_input = String::new();
             state.workspace_panel.import_form.result_message = Some(message);
             state.workspace_panel.import_form.result_is_error = false;
+            // Req 6.8: fall back to Debug if active collection was removed.
+            enforce_top_bar_mode_after_collection_change(state);
         }
         Err(message) => {
             state.workspace_panel.import_form.result_message = Some(message);
@@ -3543,51 +5190,416 @@ mod import_name_collision_tests {
     }
 }
 
-/// Vista de nivel superior. Por ahora compone la fila superior del
-/// `Request_Composer` (Tarea 3.2) y el `Response_Inspector` (Tarea 3.9); el
-/// resto (tabs de configuración, Workspace_Panel, overlays) se agrega en
-/// tareas posteriores.
-pub fn view(state: &Midway) -> Element<'_, Message> {
-    let main_content: Element<'_, Message> = match state.active_tab {
-        Some(active_tab_index) if active_tab_index < state.tabs.len() => column![
-            guarded_view("RequestComposer", || request_composer::view(state, active_tab_index)),
-            guarded_view("ResponseInspector", || response_inspector::view(state, active_tab_index)),
-        ]
-        .spacing(12)
-        .into(),
-        _ => text("Midway Desktop — no hay tabs abiertas.").into(),
+/// Construye el contenido principal según el foco de presentación actual.
+pub fn main_content_pane<'a>(state: &'a Midway, ds: DesignSystem) -> Element<'a, Message> {
+    // Top_Bar: breadcrumb + mode tabs + theme toggle (Tarea 12.1).
+    let top_bar = guarded_view("TopBar", || {
+        crate::ui::top_bar::view(state, &ds)
+    });
+
+    let body: Element<'a, Message> = if crate::ui::onboarding::should_show_onboarding(state) {
+        // Onboarding view: shown instead of Composer/Inspector when there
+        // are no collections and the focus is RequestTab (Requirements 1.1,
+        // 1.2, 1.4).
+        guarded_view("Onboarding", || {
+            crate::ui::onboarding::view(&ds)
+        })
+    } else {
+        match state.main_content_focus {
+            MainContentFocus::RequestTab => {
+                // Route by top_bar_mode (Req 6.4, 6.5).
+                match state.top_bar_mode {
+                    TopBarMode::Debug => debug_content(state, &ds),
+                    TopBarMode::Test => test_content(state, &ds),
+                }
+            }
+            MainContentFocus::WorkspaceSection => container(guarded_view("WorkspacePanel", || {
+                workspace_panel::section_content(state, &ds)
+            }))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(ds.spacing.md)
+            .into(),
+        }
     };
 
-    let mut body = column![].spacing(12);
+    column![top_bar, body]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
 
-    // Aviso de sesión descartada por corrupta/incompatible (Tarea 11.16,
-    // Criterio 6.10). No hay todavía un sistema genérico de
-    // notificaciones/toasts en `midway-desktop`: se renderiza como un
-    // simple `text()` al tope de la vista, en el mismo estilo que los
-    // mensajes de error puntuales ya existentes (por ejemplo
-    // `workspace_panel::export_section`/`import_section`), en lugar de
-    // construir un mecanismo de notificaciones más general para este único
-    // caso de uso.
-    if let Some(notice) = &state.session.startup_notice {
-        body = body.push(text(notice.clone()).color(iced::Color::from_rgb(0.8, 0.5, 0.0)));
+/// Debug mode: Request_Composer + Response_Inspector (Req 6.4).
+/// Shown even without an active collection.
+fn debug_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
+    match state.active_tab {
+        Some(active_tab_index) if active_tab_index < state.tabs.len() => {
+            let toolbar = container(guarded_view("RequestToolbar", || {
+                request_composer::toolbar(state, active_tab_index, ds)
+            }))
+            .width(Length::Fill)
+            .padding([ds.spacing.sm, ds.spacing.md]);
+            let design_system = *ds;
+            let split = responsive(move |size| {
+                debug_split_content(
+                    state,
+                    active_tab_index,
+                    design_system,
+                    debug_pane_layout(size.width),
+                    size.width,
+                )
+            });
+
+            column![toolbar, split]
+                .spacing(0)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        }
+        _ => {
+            let text_color = ds.palette.text_secondary;
+            container(
+                text("Midway Desktop — no hay tabs abiertas.").color(text_color),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+        }
+    }
+}
+
+// El toolbar ocupa todo el ancho sobre ambos paneles, por lo que editor e
+// inspector siguen siendo utilizables con unos 280 px cada uno.
+const DEBUG_HORIZONTAL_BREAKPOINT: f32 = 560.0;
+
+/// Separador vertical con una zona de agarre cómoda y una línea visual
+/// centrada. El listener global mantiene el drag aunque el cursor salga de
+/// estos pocos píxeles.
+fn vertical_resize_divider<'a>(
+    ds: &DesignSystem,
+    target: PanelDragState,
+    active: bool,
+    hovered: bool,
+    hit_width: f32,
+) -> Element<'a, Message> {
+    let line_color = if active {
+        ds.palette.accent
+    } else if hovered {
+        iced::Color {
+            a: 0.75,
+            ..ds.palette.accent
+        }
+    } else {
+        iced::Color {
+            a: 0.18,
+            ..ds.palette.accent
+        }
+    };
+    let line_width = if active { 3.0 } else { 2.0 };
+    let line = container(column![])
+        .width(Length::Fixed(line_width))
+        .height(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(line_color.into()),
+            ..container::Style::default()
+        });
+
+    let on_press = match target {
+        PanelDragState::TreeMain => PanelResizeMessage::TreeDividerDragStarted,
+        PanelDragState::RequestResponse => {
+            PanelResizeMessage::RequestResponseDividerDragStarted
+        }
+    };
+
+    mouse_area(
+        container(line)
+            .width(Length::Fixed(hit_width))
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center),
+    )
+    .on_press(Message::PanelResize(on_press))
+    .on_release(Message::PanelResize(PanelResizeMessage::DividerDragEnded))
+    .on_enter(Message::PanelResize(PanelResizeMessage::DividerHovered(
+        target,
+    )))
+    .on_exit(Message::PanelResize(PanelResizeMessage::DividerUnhovered(
+        target,
+    )))
+    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+    .into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DebugPaneLayout {
+    SideBySide,
+    Stacked,
+}
+
+fn debug_pane_layout(available_width: f32) -> DebugPaneLayout {
+    if available_width >= DEBUG_HORIZONTAL_BREAKPOINT {
+        DebugPaneLayout::SideBySide
+    } else {
+        DebugPaneLayout::Stacked
+    }
+}
+
+fn debug_split_content<'a>(
+    state: &'a Midway,
+    active_tab_index: usize,
+    ds: DesignSystem,
+    layout: DebugPaneLayout,
+    available_width: f32,
+) -> Element<'a, Message> {
+    let background = ds.palette.background_primary;
+    let border_color = ds.palette.border;
+
+    let request_pane = container(scrollable(guarded_view("RequestEditor", || {
+        request_composer::editor(state, active_tab_index, &ds)
+    })))
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding([ds.spacing.sm, ds.spacing.md])
+    .style(move |_theme| container::Style {
+        background: Some(background.into()),
+        ..container::Style::default()
+    });
+
+    let response_pane = container(scrollable(guarded_view("ResponseInspector", || {
+        response_inspector::view(state, active_tab_index)
+    })))
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding([ds.spacing.sm, ds.spacing.md])
+    .style(move |_theme| container::Style {
+        background: Some(background.into()),
+        ..container::Style::default()
+    });
+
+    match layout {
+        DebugPaneLayout::SideBySide => {
+            let request_width = request_panel_width_for_available(
+                state.session.panel_sizes.request_panel_width,
+                available_width,
+            );
+            let request_pane = request_pane.width(Length::Fixed(request_width));
+            let divider = vertical_resize_divider(
+                &ds,
+                PanelDragState::RequestResponse,
+                state.panel_dragging == Some(PanelDragState::RequestResponse),
+                state.panel_hovered == Some(PanelDragState::RequestResponse),
+                DEBUG_DIVIDER_HIT_WIDTH,
+            );
+
+            row![request_pane, divider, response_pane]
+                .spacing(0)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        }
+        DebugPaneLayout::Stacked => {
+            let divider = container(text(""))
+                .width(Length::Fill)
+                .height(Length::Fixed(1.0))
+                .style(move |_theme| container::Style {
+                    background: Some(border_color.into()),
+                    ..container::Style::default()
+                });
+            let response_height = state
+                .session
+                .panel_sizes
+                .response_panel_height
+                .clamp(180.0, 360.0);
+
+            column![
+                request_pane,
+                divider,
+                response_pane.height(Length::Fixed(response_height)),
+            ]
+            .spacing(0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        }
+    }
+}
+
+#[cfg(test)]
+mod debug_layout_tests {
+    use super::*;
+
+    #[test]
+    fn wide_debug_area_uses_side_by_side_layout() {
+        assert_eq!(
+            debug_pane_layout(DEBUG_HORIZONTAL_BREAKPOINT),
+            DebugPaneLayout::SideBySide
+        );
     }
 
-    body = body.push(row![main_content, guarded_view("WorkspacePanel", || workspace_panel::view(state))].spacing(12));
+    #[test]
+    fn narrow_debug_area_uses_stacked_layout() {
+        assert_eq!(
+            debug_pane_layout(DEBUG_HORIZONTAL_BREAKPOINT - 1.0),
+            DebugPaneLayout::Stacked
+        );
+    }
+}
 
-    let content: Element<'_, Message> = body.padding(12).into();
+/// Test mode: Collection_Runner for the active collection (Req 6.5).
+fn test_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
+    let text_color = ds.palette.text_secondary;
 
-    // Overlay del Command Palette (Tarea 11.2, Requisito 6.1): se abre con
-    // Ctrl/Cmd+K y se renderiza sobre el resto de la vista vía
-    // `iced::widget::stack`, sin alterar `content` cuando está cerrado.
-    let content = guarded_view("CommandPalette", || crate::ui::command_palette::with_overlay(state, content));
+    // Show the Collection_Runner status for the active collection.
+    // The full Collection_Runner UI is wired in Tarea 17.1; here we render
+    // a meaningful placeholder that shows the runner state if available.
+    let collection_name = state
+        .active_collection_id
+        .as_deref()
+        .and_then(|id| {
+            state
+                .workspace
+                .collections
+                .iter()
+                .find(|c| c.collection.id == id)
+                .map(|c| c.collection.name.as_str())
+        })
+        .unwrap_or("(sin colección)");
 
-    // Overlay del aviso de unsaved changes (Tarea 11.10, Requisito 6.6): se
-    // muestra al intentar cerrar una tab "dirty" (`tab_is_dirty`) y se
-    // apila sobre el resto de la vista (incluyendo el Command Palette, ver
-    // doc de `unsaved_changes_modal::with_overlay`) vía `iced::widget::
-    // stack`, sin alterar `content` cuando no hay ningún aviso abierto.
+    let header = text(format!("Collection Runner — {collection_name}"))
+        .size(ds.typography.subtitle.size)
+        .color(ds.palette.text_primary);
+
+    let status: Element<'a, Message> = match &state.runner {
+        Some(runner) => {
+            let progress_text = if let Some(ref report) = runner.report {
+                format!(
+                    "Ejecución finalizada: {} request(s) ejecutados.",
+                    report.items.len()
+                )
+            } else if let Some(ref progress) = runner.latest_progress {
+                format!("{progress:?}")
+            } else {
+                "Ejecución en curso…".to_string()
+            };
+            text(progress_text).color(text_color).into()
+        }
+        None => text("Sin ejecución en curso. Presiona Run para ejecutar la colección.")
+            .color(text_color)
+            .into(),
+    };
+
+    container(
+        column![header, status]
+            .spacing(ds.spacing.md)
+            .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(ds.spacing.md)
+    .into()
+}
+
+/// Vista de nivel superior del rediseño Insomnia (Tarea 17.1).
+///
+/// Layout de tres paneles (de izquierda a derecha):
+/// ┌──────────┬─────────────────────┬───────────────────────────────────┐
+/// │          │                     │  Top_Bar (breadcrumb + Debug|Test) │
+/// │ Activity │  Request_Tree_Pane  ├───────────────────────────────────┤
+/// │   Bar    │  (tree + filter)    │  Main Content:                     │
+/// │ (icons)  │                     │  - Debug: Composer + Inspector     │
+/// │          │                     │  - Test: Collection_Runner         │
+/// │          │                     │  - Section: Workspace_Panel        │
+/// └──────────┴─────────────────────┴───────────────────────────────────┘
+///
+/// Ruteo del contenido principal por `MainContentFocus`/`top_bar_mode`:
+/// - `RequestTab` + Debug: Request_Composer + Response_Inspector
+/// - `RequestTab` + Test: Collection_Runner
+/// - `WorkspaceSection`: Workspace_Panel
+pub fn view(state: &Midway) -> Element<'_, Message> {
+    let ds = crate::ui::design_system::DesignSystem::for_mode(state.theme_mode);
+
+    // Activity_Bar: barra angosta de iconos a la izquierda (48px)
+    let activity_bar = container(guarded_view("ActivityBar", || {
+        crate::ui::activity_bar::view(state, &ds)
+    }))
+    .width(Length::Fixed(48.0))
+    .height(Length::Fill);
+
+    // Request_Tree_Pane: árbol de folders/requests de la colección activa
+    let tree_pane_width = state.session.panel_sizes.workspace_panel_width;
+    let tree_pane = container(guarded_view("RequestTreePane", || {
+        crate::ui::request_tree_pane::view(state, &ds)
+    }))
+    .width(Length::Fixed(tree_pane_width))
+    .height(Length::Fill);
+
+    // Divider árbol/contenido: hitbox de 10 px y línea acentuada centrada.
+    let divider = vertical_resize_divider(
+        &ds,
+        PanelDragState::TreeMain,
+        state.panel_dragging == Some(PanelDragState::TreeMain),
+        state.panel_hovered == Some(PanelDragState::TreeMain),
+        TREE_DIVIDER_HIT_WIDTH,
+    );
+
+    // Main content pane: Top_Bar encima + contenido ruteado por modo
+    let main = main_content_pane(state, ds);
+
+    // Layout principal: tres columnas, altura completa
+    let mut body: iced::widget::Column<'_, Message> = column![];
+
+    // Aviso de sesión descartada
+    if let Some(notice) = &state.session.startup_notice {
+        body = body.push(
+            container(text(notice.clone()).color(iced::Color::from_rgb(0.8, 0.5, 0.0)))
+                .padding(ds.spacing.sm),
+        );
+    }
+
+    body = body.push(
+        row![activity_bar, tree_pane, divider, main]
+            .spacing(0)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    );
+
+    let background = ds.palette.background_primary;
+    let content: Element<'_, Message> = container(body)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(background.into()),
+            ..container::Style::default()
+        })
+        .into();
+
+    // El campo de nombre necesita más ancho que los 48 px del Activity Bar.
+    let content = guarded_view("CreateCollectionOverlay", || {
+        crate::ui::activity_bar::with_create_collection_overlay(state, content, &ds)
+    });
+
+    let content = guarded_view("SaveRequestOverlay", || {
+        crate::ui::save_request_modal::with_overlay(state, content, &ds)
+    });
+
+    let content = guarded_view("WorkspaceCrudOverlay", || {
+        crate::ui::workspace_crud_modal::with_overlay(
+            state.workspace_crud_dialog.as_ref(),
+            content,
+            &ds,
+        )
+    });
+
+    // Overlay del Command Palette
+    let content = guarded_view("CommandPalette", || {
+        crate::ui::command_palette::with_overlay(state, content, &ds)
+    });
+
+    // Overlay del aviso de unsaved changes
     guarded_view("UnsavedChangesModal", || {
-        crate::ui::unsaved_changes_modal::with_overlay(state, content)
+        crate::ui::unsaved_changes_modal::with_overlay(state, content, &ds)
     })
 }
 
@@ -3703,12 +5715,49 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
         _ => None,
     });
 
+    // Siempre activa: si se crea recién después del press inicial, Iced
+    // puede perder movimientos/liberación pertenecientes al mismo lote de
+    // eventos. El reducer ignora CursorMoved cuando no hay drag activo.
+    let panel_resize_subscription = iced::event::listen_with(|event, _status, _id| {
+        panel_resize_message_for_event(&event).map(Message::PanelResize)
+    });
+    // El handle del request puede soltarse fuera de su fila o del árbol;
+    // escuchamos la liberación global para completar/cancelar el drop.
+    let request_drop_subscription = iced::event::listen_with(|event, _status, _id| {
+        match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                iced::mouse::Button::Left,
+            )) => Some(Message::Tree(TreeMessage::RequestDragReleased)),
+            iced::Event::Mouse(iced::mouse::Event::CursorLeft)
+            | iced::Event::Window(iced::window::Event::Unfocused) => {
+                Some(Message::Tree(TreeMessage::RequestDragCancelled))
+            }
+            _ => None,
+        }
+    });
+
     Subscription::batch([
         runner_subscription,
         autosave_subscription,
         palette_shortcut_subscription,
         global_shortcut_subscription,
+        panel_resize_subscription,
+        request_drop_subscription,
     ])
+}
+
+fn panel_resize_message_for_event(event: &iced::Event) -> Option<PanelResizeMessage> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+            Some(PanelResizeMessage::DividerDragged(position.x))
+        }
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left))
+        | iced::Event::Mouse(iced::mouse::Event::CursorLeft)
+        | iced::Event::Window(iced::window::Event::Unfocused) => {
+            Some(PanelResizeMessage::DividerDragEnded)
+        }
+        _ => None,
+    }
 }
 
 /// Construye el `Stream<Item = Message>` que consume el extremo receptor del
@@ -3751,6 +5800,7 @@ mod tests {
     //! ni escribir.
 
     use super::*;
+    use midway_core::domain::cookies::CookieJarHandle;
     use midway_core::domain::http::{
         ApiKeyPlacement, FormDataFieldKind, FormDataRow, KeyValueRow, RequestBodyDraft,
     };
@@ -3785,6 +5835,7 @@ mod tests {
                 repository,
                 request_executor: RequestExecutorHandle::spawn(client),
                 secret_executor: SecretExecutorHandle::spawn("midway-test".to_string()),
+                cookie_jar: CookieJarHandle::new(),
             }
         });
 
@@ -3816,9 +5867,19 @@ mod tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
+            theme_mode: ThemeMode::default(),
+            main_content_focus: MainContentFocus::default(),
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
             unsaved_changes_prompt: None,
+            active_collection_id: None,
+            top_bar_mode: TopBarMode::default(),
+            tree: TreeViewState::default(),
+            create_collection_prompt: None,
+            save_request_prompt: None,
+            workspace_crud_dialog: None,
+            panel_dragging: None,
+            panel_hovered: None,
         }
     }
 
@@ -4146,6 +6207,7 @@ mod tests {
             repository,
             request_executor: RequestExecutorHandle::spawn(client),
             secret_executor: SecretExecutorHandle::spawn("midway-test".to_string()),
+            cookie_jar: CookieJarHandle::new(),
         };
 
         // El archivo temporal puede eliminarse en cuanto termina `open`
@@ -4174,9 +6236,19 @@ mod tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
+            theme_mode: ThemeMode::default(),
+            main_content_focus: MainContentFocus::default(),
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
             unsaved_changes_prompt: None,
+            active_collection_id: None,
+            top_bar_mode: TopBarMode::default(),
+            tree: TreeViewState::default(),
+            create_collection_prompt: None,
+            save_request_prompt: None,
+            workspace_crud_dialog: None,
+            panel_dragging: None,
+            panel_hovered: None,
         }
     }
 
@@ -6055,9 +8127,11 @@ mod tests {
                     created_at: "2024-01-01T00:00:00Z".to_string(),
                     updated_at: "2024-01-01T00:00:00Z".to_string(),
                 },
+                folders: Vec::new(),
                 requests: vec![SavedRequestRecord {
                     id: request_id.clone(),
                     collection_id: "collection-1".to_string(),
+                    folder_id: None,
                     name: "Obtener usuario".to_string(),
                     draft,
                     created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -6942,18 +9016,172 @@ mod tests {
         assert!(!midway.workspace_panel.collapsed, "una segunda pulsación debe expandirlo de nuevo");
     }
 
-    /// Ctrl+S ("Guardar"): no existe todavía un flujo de "guardar en una
-    /// collection" al que delegar (ver doc de
-    /// `KeyboardMessage::SaveRequested`); el shortcut debe seguir
-    /// despachando el mensaje sin entrar en pánico ni mutar el estado.
+    /// Ctrl+S abre el mismo diálogo de guardado que el botón del composer.
     #[test]
-    fn keyboard_save_requested_is_a_documented_no_op() {
+    fn keyboard_save_requested_opens_save_dialog_for_active_tab() {
         let mut midway = build_test_midway(create_blank_draft());
-        let tabs_before = midway.tabs.len();
+        let expected_tab_id = midway.tabs[0].id.clone();
 
         let _ = update_keyboard(&mut midway, KeyboardMessage::SaveRequested);
 
-        assert_eq!(midway.tabs.len(), tabs_before);
+        let prompt = midway
+            .save_request_prompt
+            .as_ref()
+            .expect("Ctrl+S debe abrir el diálogo de guardado");
+        assert_eq!(prompt.tab_id, expected_tab_id);
+        assert_eq!(prompt.name_input, "Nueva petición");
+    }
+
+    #[test]
+    fn keyboard_save_requested_without_active_tab_is_a_no_op() {
+        let mut midway = build_test_midway(create_blank_draft());
+        midway.active_tab = None;
+
+        let _ = update_keyboard(&mut midway, KeyboardMessage::SaveRequested);
+
+        assert!(midway.save_request_prompt.is_none());
+    }
+
+    fn test_collection(
+        id: &str,
+        name: &str,
+        folders: Vec<Folder>,
+        requests: Vec<midway_core::domain::workspace::SavedRequestRecord>,
+    ) -> CollectionWithRequests {
+        CollectionWithRequests {
+            collection: CollectionSummary {
+                id: id.to_string(),
+                name: name.to_string(),
+                request_count: requests.len() as u64,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders,
+            requests,
+        }
+    }
+
+    #[test]
+    fn save_dialog_defaults_to_active_collection() {
+        let mut midway = build_test_midway(create_blank_draft());
+        midway.workspace.collections.push(test_collection(
+            "collection-1",
+            "My API",
+            Vec::new(),
+            Vec::new(),
+        ));
+        midway.active_collection_id = Some("collection-1".to_string());
+
+        open_save_request_prompt(&mut midway);
+
+        let prompt = midway.save_request_prompt.as_ref().unwrap();
+        assert_eq!(prompt.collection_id.as_deref(), Some("collection-1"));
+        assert!(prompt.folder_id.is_none());
+    }
+
+    #[test]
+    fn changing_save_collection_resets_selected_folder() {
+        let mut midway = build_test_midway(create_blank_draft());
+        midway.workspace.collections = vec![
+            test_collection("collection-1", "One", Vec::new(), Vec::new()),
+            test_collection("collection-2", "Two", Vec::new(), Vec::new()),
+        ];
+        open_save_request_prompt(&mut midway);
+        midway.save_request_prompt.as_mut().unwrap().folder_id = Some("old-folder".to_string());
+
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::SaveCollectionChanged("collection-2".to_string()),
+        );
+
+        let prompt = midway.save_request_prompt.as_ref().unwrap();
+        assert_eq!(prompt.collection_id.as_deref(), Some("collection-2"));
+        assert!(prompt.folder_id.is_none());
+    }
+
+    #[test]
+    fn save_completion_updates_tab_baseline_workspace_and_active_collection() {
+        let mut midway = build_test_midway(create_blank_draft());
+        open_save_request_prompt(&mut midway);
+        let tab_id = midway.tabs[0].id.clone();
+        let mut saved_draft = midway.tabs[0].draft.clone();
+        saved_draft.id = Some("request-1".to_string());
+        saved_draft.name = "List users".to_string();
+        let record = midway_core::domain::workspace::SavedRequestRecord {
+            id: "request-1".to_string(),
+            collection_id: "collection-1".to_string(),
+            folder_id: None,
+            name: saved_draft.name.clone(),
+            draft: saved_draft.clone(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let workspace = WorkspaceSnapshot {
+            collections: vec![test_collection(
+                "collection-1",
+                "My API",
+                Vec::new(),
+                vec![record],
+            )],
+            environments: Vec::new(),
+            history: Vec::new(),
+            secrets: Vec::new(),
+        };
+
+        handle_save_request_completed(
+            &mut midway,
+            Ok(RequestSaveOutcome {
+                tab_id,
+                saved_draft: saved_draft.clone(),
+                workspace,
+                collection_id: "collection-1".to_string(),
+            }),
+        );
+
+        assert_eq!(midway.tabs[0].draft, saved_draft);
+        assert_eq!(midway.tabs[0].saved_draft, Some(saved_draft));
+        assert_eq!(midway.active_collection_id.as_deref(), Some("collection-1"));
+        assert_eq!(midway.workspace.collections[0].requests.len(), 1);
+        assert!(midway.save_request_prompt.is_none());
+        assert!(midway.session.dirty);
+    }
+
+    #[test]
+    fn initial_workspace_load_restores_saved_baseline_without_overwriting_edits() {
+        let mut current_draft = create_blank_draft();
+        current_draft.id = Some("request-1".to_string());
+        current_draft.name = "Edited locally".to_string();
+        let mut midway = build_test_midway(current_draft.clone());
+        midway.active_collection_id = Some("collection-1".to_string());
+
+        let mut persisted_draft = current_draft.clone();
+        persisted_draft.name = "Persisted name".to_string();
+        let record = midway_core::domain::workspace::SavedRequestRecord {
+            id: "request-1".to_string(),
+            collection_id: "collection-1".to_string(),
+            folder_id: None,
+            name: persisted_draft.name.clone(),
+            draft: persisted_draft.clone(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let snapshot = WorkspaceSnapshot {
+            collections: vec![test_collection(
+                "collection-1",
+                "My API",
+                Vec::new(),
+                vec![record],
+            )],
+            environments: Vec::new(),
+            history: Vec::new(),
+            secrets: Vec::new(),
+        };
+
+        handle_workspace_snapshot_loaded(&mut midway, Ok(snapshot));
+
+        assert_eq!(midway.tabs[0].draft, current_draft);
+        assert_eq!(midway.tabs[0].saved_draft, Some(persisted_draft));
+        assert_eq!(midway.active_collection_id.as_deref(), Some("collection-1"));
     }
 
     /// Ctrl+Shift+N ("Nuevo request"): abre una tab en blanco adicional y
@@ -7118,6 +9346,7 @@ mod tests {
         crate::session::PanelSizes {
             workspace_panel_width: 321.0,
             response_panel_height: 654.0,
+            request_panel_width: 432.0,
         }
     }
 
@@ -7135,14 +9364,16 @@ mod tests {
             ],
             closed_tabs: Vec::new(),
             panel_sizes: sample_panel_sizes(),
+            theme_mode: ThemeMode::default(),
             saved_at: "2024-01-01T00:00:00Z".to_string(),
+            active_collection_id: None,
         };
         let mut session = SessionStoreState {
             pending_restore: Some(snapshot),
             ..SessionStoreState::default()
         };
 
-        let (tabs, _active_tab) = restore_pending_session(&mut session);
+        let (tabs, _active_tab, _session_collection_id) = restore_pending_session(&mut session);
 
         assert_eq!(tabs.len(), 3);
         assert_eq!(tabs[0].id, "tab-a");
@@ -7168,14 +9399,16 @@ mod tests {
             ],
             closed_tabs: Vec::new(),
             panel_sizes: sample_panel_sizes(),
+            theme_mode: ThemeMode::default(),
             saved_at: "2024-01-01T00:00:00Z".to_string(),
+            active_collection_id: None,
         };
         let mut session = SessionStoreState {
             pending_restore: Some(snapshot),
             ..SessionStoreState::default()
         };
 
-        let (_tabs, active_tab) = restore_pending_session(&mut session);
+        let (_tabs, active_tab, _active_collection_id) = restore_pending_session(&mut session);
 
         assert_eq!(active_tab, Some(2));
     }
@@ -7194,14 +9427,16 @@ mod tests {
             ],
             closed_tabs: Vec::new(),
             panel_sizes: sample_panel_sizes(),
+            theme_mode: ThemeMode::default(),
             saved_at: "2024-01-01T00:00:00Z".to_string(),
+            active_collection_id: None,
         };
         let mut session = SessionStoreState {
             pending_restore: Some(snapshot),
             ..SessionStoreState::default()
         };
 
-        let (tabs, active_tab) = restore_pending_session(&mut session);
+        let (tabs, active_tab, _active_collection_id) = restore_pending_session(&mut session);
 
         assert_eq!(tabs.len(), 2);
         assert_eq!(active_tab, Some(0));
@@ -7218,7 +9453,9 @@ mod tests {
             open_tabs: vec![tab_snapshot("tab-a", "https://a.example.com")],
             closed_tabs: Vec::new(),
             panel_sizes: expected_panel_sizes.clone(),
+            theme_mode: ThemeMode::default(),
             saved_at: "2024-01-01T00:00:00Z".to_string(),
+            active_collection_id: None,
         };
         let mut session = SessionStoreState {
             pending_restore: Some(snapshot),
@@ -7242,14 +9479,16 @@ mod tests {
             open_tabs: Vec::new(),
             closed_tabs: Vec::new(),
             panel_sizes: sample_panel_sizes(),
+            theme_mode: ThemeMode::default(),
             saved_at: "2024-01-01T00:00:00Z".to_string(),
+            active_collection_id: None,
         };
         let mut session = SessionStoreState {
             pending_restore: Some(snapshot),
             ..SessionStoreState::default()
         };
 
-        let (tabs, active_tab) = restore_pending_session(&mut session);
+        let (tabs, active_tab, _active_collection_id) = restore_pending_session(&mut session);
 
         assert_eq!(tabs.len(), 1);
         assert!(is_draft_empty(&tabs[0].draft));
@@ -7263,7 +9502,7 @@ mod tests {
         let mut session = SessionStoreState::default();
         assert!(session.pending_restore.is_none());
 
-        let (tabs, active_tab) = restore_pending_session(&mut session);
+        let (tabs, active_tab, _active_collection_id) = restore_pending_session(&mut session);
 
         assert_eq!(tabs.len(), 1);
         assert!(is_draft_empty(&tabs[0].draft));
@@ -7439,6 +9678,163 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn crud_saved_request(
+        id: &str,
+        collection_id: &str,
+        folder_id: Option<&str>,
+    ) -> midway_core::domain::workspace::SavedRequestRecord {
+        let mut draft = create_blank_draft();
+        draft.id = Some(id.to_string());
+        draft.name = id.to_string();
+        midway_core::domain::workspace::SavedRequestRecord {
+            id: id.to_string(),
+            collection_id: collection_id.to_string(),
+            folder_id: folder_id.map(str::to_string),
+            name: id.to_string(),
+            draft,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn crud_collection(
+        id: &str,
+        folders: Vec<Folder>,
+        requests: Vec<midway_core::domain::workspace::SavedRequestRecord>,
+    ) -> CollectionWithRequests {
+        CollectionWithRequests {
+            collection: CollectionSummary {
+                id: id.to_string(),
+                name: format!("Colección {id}"),
+                request_count: requests.len() as u64,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders,
+            requests,
+        }
+    }
+
+    #[test]
+    fn reconcile_workspace_after_crud_cleans_deleted_request_references() {
+        let deleted_folder = Folder {
+            id: "folder-deleted".to_string(),
+            collection_id: "collection-a".to_string(),
+            parent_folder_id: None,
+            name: "Borrada".to_string(),
+        };
+        let surviving_folder = Folder {
+            id: "folder-keep".to_string(),
+            collection_id: "collection-a".to_string(),
+            parent_folder_id: None,
+            name: "Conservar".to_string(),
+        };
+        let deleted_request = crud_saved_request(
+            "request-deleted",
+            "collection-a",
+            Some("folder-deleted"),
+        );
+        let surviving_request = crud_saved_request("request-keep", "collection-a", None);
+
+        let mut state = build_test_midway(create_blank_draft());
+        state.workspace.collections = vec![crud_collection(
+            "collection-a",
+            vec![deleted_folder.clone(), surviving_folder.clone()],
+            vec![deleted_request.clone(), surviving_request.clone()],
+        )];
+        state.active_collection_id = Some("collection-a".to_string());
+        state.tabs = vec![
+            RequestTabState::from_draft(deleted_request.draft.clone()),
+            RequestTabState::from_draft(surviving_request.draft.clone()),
+            RequestTabState::blank(),
+        ];
+        state.active_tab = Some(0);
+        let deleted_tab_id = state.tabs[0].id.clone();
+        state.closed_tabs.push_front(state.tabs[0].to_snapshot());
+        state.save_request_prompt = Some(SaveRequestPromptState {
+            tab_id: deleted_tab_id.clone(),
+            name_input: "request-deleted".to_string(),
+            collection_id: Some("collection-a".to_string()),
+            folder_id: Some("folder-deleted".to_string()),
+            saving: false,
+            error: None,
+        });
+        state.unsaved_changes_prompt = Some(UnsavedChangesPromptState {
+            tab_id: deleted_tab_id,
+            saving: false,
+            error: None,
+        });
+        state.tree.collapsed.extend([
+            "folder-deleted".to_string(),
+            "folder-keep".to_string(),
+        ]);
+        state.tree.collapsed_snapshot = Some(state.tree.collapsed.clone());
+        state.workspace_crud_dialog = Some(WorkspaceCrudDialogState {
+            kind: WorkspaceCrudKind::DeleteFolder {
+                folder_id: "folder-deleted".to_string(),
+            },
+            entity_name: "Borrada".to_string(),
+            name_input: String::new(),
+            busy: true,
+            error: None,
+        });
+
+        let new_workspace = WorkspaceSnapshot {
+            collections: vec![crud_collection(
+                "collection-a",
+                vec![surviving_folder],
+                vec![surviving_request],
+            )],
+            environments: Vec::new(),
+            history: Vec::new(),
+            secrets: Vec::new(),
+        };
+        reconcile_workspace_after_crud(&mut state, new_workspace);
+
+        assert!(state.tabs.iter().all(|tab| {
+            tab.draft.id.as_deref() != Some("request-deleted")
+        }));
+        assert!(state.closed_tabs.iter().all(|tab| {
+            tab.draft.id.as_deref() != Some("request-deleted")
+        }));
+        assert!(state.save_request_prompt.is_none());
+        assert!(state.unsaved_changes_prompt.is_none());
+        assert_eq!(state.active_collection_id.as_deref(), Some("collection-a"));
+        assert_eq!(state.tree.collapsed, HashSet::from(["folder-keep".to_string()]));
+        assert_eq!(
+            state.tree.collapsed_snapshot,
+            Some(HashSet::from(["folder-keep".to_string()]))
+        );
+        assert!(state.workspace_crud_dialog.is_none());
+        assert!(state.session.dirty);
+    }
+
+    #[test]
+    fn reconcile_workspace_after_deleting_active_collection_selects_fallback() {
+        let mut state = build_test_midway(create_blank_draft());
+        state.workspace.collections = vec![
+            crud_collection("collection-a", Vec::new(), Vec::new()),
+            crud_collection("collection-b", Vec::new(), Vec::new()),
+        ];
+        state.active_collection_id = Some("collection-a".to_string());
+        state.tree.filter = "filtro viejo".to_string();
+        state.tree.collapsed.insert("stale-folder".to_string());
+
+        reconcile_workspace_after_crud(
+            &mut state,
+            WorkspaceSnapshot {
+                collections: vec![crud_collection("collection-b", Vec::new(), Vec::new())],
+                environments: Vec::new(),
+                history: Vec::new(),
+                secrets: Vec::new(),
+            },
+        );
+
+        assert_eq!(state.active_collection_id.as_deref(), Some("collection-b"));
+        assert!(state.tree.filter.is_empty());
+        assert!(state.tree.collapsed.is_empty());
     }
 }
 
@@ -7708,6 +10104,510 @@ mod error_boundary_tests {
 
                 Ok(())
             })?;
+        }
+    }
+}
+
+// Feature: ux-flow-redesign, Property 7: Collection auto-selection at startup
+#[cfg(test)]
+mod resolve_startup_collection_tests {
+    //! Feature: ux-flow-redesign, Property 7: Collection auto-selection at startup
+    //! Validates: Requirements 6.1, 6.2, 6.3, 6.4
+
+    use super::*;
+    use midway_core::domain::workspace::{CollectionSummary, CollectionWithRequests};
+    use proptest::prelude::*;
+
+    /// Strategy to generate a valid collection id (non-empty alphanumeric string).
+    fn collection_id_strategy() -> impl Strategy<Value = String> {
+        "[a-z0-9]{1,20}".prop_map(|s| s.to_string())
+    }
+
+    /// Strategy to generate a CollectionWithRequests with a given id.
+    fn collection_with_id(id: String) -> CollectionWithRequests {
+        CollectionWithRequests {
+            collection: CollectionSummary {
+                id,
+                name: "test-collection".to_string(),
+                request_count: 0,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders: Vec::new(),
+            requests: Vec::new(),
+        }
+    }
+
+    /// Strategy to generate a non-empty Vec of CollectionWithRequests with unique ids.
+    fn non_empty_collections_strategy() -> impl Strategy<Value = Vec<CollectionWithRequests>> {
+        proptest::collection::vec(collection_id_strategy(), 1..=10)
+            .prop_map(|ids| {
+                // Deduplicate ids to ensure uniqueness
+                let mut seen = std::collections::HashSet::new();
+                ids.into_iter()
+                    .filter(|id| seen.insert(id.clone()))
+                    .map(|id| collection_with_id(id))
+                    .collect::<Vec<_>>()
+            })
+            .prop_filter("must have at least one collection", |v| !v.is_empty())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// Property 7: For a non-empty list of collections, resolve_startup_collection
+        /// returns session_id if it matches an existing collection's id, otherwise
+        /// returns collections[0].id.
+        #[test]
+        fn property_7_non_empty_collections_returns_session_or_first(
+            collections in non_empty_collections_strategy(),
+        ) {
+            let collection_ids: Vec<String> = collections.iter()
+                .map(|c| c.collection.id.clone())
+                .collect();
+
+            // Test with session_id that matches one of the collections
+            for id in &collection_ids {
+                let result = resolve_startup_collection(&collections, Some(id));
+                prop_assert_eq!(
+                    result.as_deref(),
+                    Some(id.as_str()),
+                    "When session_id matches an existing collection, it should be returned"
+                );
+            }
+
+            // Test with session_id that does NOT match any collection
+            let non_existent_id = format!("{}-does-not-exist", collection_ids[0]);
+            let result = resolve_startup_collection(&collections, Some(&non_existent_id));
+            prop_assert_eq!(
+                result.as_deref(),
+                Some(collection_ids[0].as_str()),
+                "When session_id does not match, should return first collection's id"
+            );
+
+            // Test with no session_id (None)
+            let result = resolve_startup_collection(&collections, None);
+            prop_assert_eq!(
+                result.as_deref(),
+                Some(collection_ids[0].as_str()),
+                "When session_id is None, should return first collection's id"
+            );
+        }
+
+        /// Property 7: For an empty collections list, resolve_startup_collection
+        /// returns None regardless of session_id.
+        #[test]
+        fn property_7_empty_collections_returns_none(
+            session_id in proptest::option::of("[a-z0-9]{1,20}"),
+        ) {
+            let empty: Vec<CollectionWithRequests> = Vec::new();
+            let result = resolve_startup_collection(&empty, session_id.as_deref());
+            prop_assert_eq!(
+                result,
+                None,
+                "For an empty collections list, should always return None"
+            );
+        }
+    }
+}
+
+// Feature: ux-flow-redesign, Property 4: Navigation toggle preserves Composer state
+#[cfg(test)]
+mod navigation_toggle_preserves_composer_state_tests {
+    //! Feature: ux-flow-redesign, Property 4: Navigation toggle preserves Composer state
+    //! Validates: Requirements 4.1, 4.2, 8.3
+
+    use super::*;
+    use midway_core::infra::sqlite_repository::SqliteRepository;
+    use midway_core::runtime::request_executor::RequestExecutorHandle;
+    use midway_core::runtime::secret_executor::SecretExecutorHandle;
+    use midway_core::domain::cookies::CookieJarHandle;
+    use crate::state::AppState;
+    use crate::curl::create_blank_draft;
+    use proptest::prelude::*;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    /// Build a minimal AppState for testing (opens a temp SQLite DB).
+    fn build_test_app_state() -> AppState {
+        let temp_file = tempfile::NamedTempFile::new()
+            .expect("failed to create temp file for test AppState");
+        let db_path = temp_file.path().to_path_buf();
+
+        let runtime = tokio::runtime::Runtime::new()
+            .expect("failed to create tokio runtime for test AppState");
+
+        let app_state = runtime.block_on(async {
+            let repository = SqliteRepository::open(&db_path)
+                .await
+                .expect("failed to open SqliteRepository for test");
+
+            let client = reqwest::Client::builder()
+                .build()
+                .expect("failed to build reqwest client for test");
+
+            AppState {
+                repository,
+                request_executor: RequestExecutorHandle::spawn(client),
+                secret_executor: SecretExecutorHandle::spawn("midway-test".to_string()),
+                cookie_jar: CookieJarHandle::new(),
+            }
+        });
+
+        drop(temp_file);
+        app_state
+    }
+
+    /// Build a test Midway state with configurable focus, collection_id, tabs, and active_tab.
+    fn build_test_midway_state(
+        app_state: Arc<AppState>,
+        focus: MainContentFocus,
+        collection_id: Option<String>,
+        tabs: Vec<RequestTabState>,
+        active_tab: Option<usize>,
+    ) -> Midway {
+        Midway {
+            app_state,
+            workspace: midway_core::domain::workspace::WorkspaceSnapshot {
+                collections: Vec::new(),
+                environments: Vec::new(),
+                history: Vec::new(),
+                secrets: Vec::new(),
+            },
+            tabs,
+            active_tab,
+            closed_tabs: VecDeque::new(),
+            workspace_panel: WorkspacePanelState::default(),
+            palette: PaletteState::default(),
+            runner: None,
+            session: SessionStoreState::default(),
+            theme_mode: Default::default(),
+            main_content_focus: focus,
+            updater: UpdaterState::default(),
+            crash_log: Vec::new(),
+            unsaved_changes_prompt: None,
+            active_collection_id: collection_id,
+            top_bar_mode: TopBarMode::default(),
+            tree: TreeViewState::default(),
+            create_collection_prompt: None,
+            save_request_prompt: None,
+            workspace_crud_dialog: None,
+            panel_dragging: None,
+            panel_hovered: None,
+        }
+    }
+
+    /// Strategy to generate an arbitrary `MainContentFocus`.
+    fn arb_main_content_focus() -> impl Strategy<Value = MainContentFocus> {
+        prop_oneof![
+            Just(MainContentFocus::RequestTab),
+            Just(MainContentFocus::WorkspaceSection),
+        ]
+    }
+
+    /// Strategy to generate an arbitrary `Option<String>` for active_collection_id.
+    fn arb_active_collection_id() -> impl Strategy<Value = Option<String>> {
+        prop_oneof![
+            3 => Just(None),
+            7 => "[a-z0-9]{1,20}".prop_map(|s| Some(s)),
+        ]
+    }
+
+    /// Strategy to generate a tab count (0 to 5) and an active_tab index.
+    fn arb_tab_config() -> impl Strategy<Value = (usize, Option<usize>)> {
+        (0usize..=5).prop_flat_map(|count| {
+            let active = if count == 0 {
+                Just(None).boxed()
+            } else {
+                (0..count).prop_map(Some).boxed()
+            };
+            active.prop_map(move |a| (count, a))
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// Property 4: Home toggle flips main_content_focus without modifying
+        /// active_collection_id, tabs, or active_tab. Double-toggle returns
+        /// main_content_focus to its original value.
+        #[test]
+        fn property_4_home_toggle_preserves_composer_state(
+            focus in arb_main_content_focus(),
+            collection_id in arb_active_collection_id(),
+            (tab_count, active_tab_val) in arb_tab_config(),
+        ) {
+            // Share a single AppState across all iterations via lazy initialization
+            use std::sync::LazyLock;
+            static SHARED_APP_STATE: LazyLock<Arc<AppState>> = LazyLock::new(|| {
+                Arc::new(build_test_app_state())
+            });
+            let app_state = Arc::clone(&SHARED_APP_STATE);
+
+            // Build tabs from tab_count (each with a blank draft)
+            let tabs: Vec<RequestTabState> = (0..tab_count)
+                .map(|_| RequestTabState::from_draft(create_blank_draft()))
+                .collect();
+
+            // Capture pre-toggle snapshots of tabs for comparison
+            let pre_tab_snapshots: Vec<TabSnapshot> = tabs.iter()
+                .map(|t: &RequestTabState| t.to_snapshot())
+                .collect();
+            let pre_active_tab = active_tab_val;
+            let pre_collection_id = collection_id.clone();
+            let original_focus = focus;
+
+            // Build test state
+            let mut state = build_test_midway_state(
+                app_state, focus, collection_id, tabs, active_tab_val,
+            );
+
+            // --- First toggle ---
+            let _ = update_activity_bar(&mut state, ActivityBarMessage::HomePressed);
+
+            // Assert main_content_focus flipped
+            let expected_focus_after_first = match original_focus {
+                MainContentFocus::RequestTab => MainContentFocus::WorkspaceSection,
+                MainContentFocus::WorkspaceSection => MainContentFocus::RequestTab,
+            };
+            prop_assert_eq!(
+                state.main_content_focus,
+                expected_focus_after_first,
+                "After first toggle, focus should have flipped"
+            );
+
+            // Assert active_collection_id unchanged
+            prop_assert_eq!(
+                &state.active_collection_id,
+                &pre_collection_id,
+                "active_collection_id must not change after HomePressed"
+            );
+
+            // Assert active_tab unchanged
+            prop_assert_eq!(
+                state.active_tab,
+                pre_active_tab,
+                "active_tab must not change after HomePressed"
+            );
+
+            // Assert tabs unchanged (compare via snapshots)
+            let post_tab_snapshots: Vec<TabSnapshot> = state.tabs.iter()
+                .map(|t: &RequestTabState| t.to_snapshot())
+                .collect();
+            prop_assert_eq!(
+                &post_tab_snapshots,
+                &pre_tab_snapshots,
+                "tabs must not change after HomePressed"
+            );
+
+            // --- Second toggle (double-toggle) ---
+            let _ = update_activity_bar(&mut state, ActivityBarMessage::HomePressed);
+
+            // Assert main_content_focus returned to original
+            prop_assert_eq!(
+                state.main_content_focus,
+                original_focus,
+                "After double-toggle, focus should return to original value"
+            );
+
+            // Assert active_collection_id still unchanged
+            prop_assert_eq!(
+                &state.active_collection_id,
+                &pre_collection_id,
+                "active_collection_id must not change after double-toggle"
+            );
+
+            // Assert active_tab still unchanged
+            prop_assert_eq!(
+                state.active_tab,
+                pre_active_tab,
+                "active_tab must not change after double-toggle"
+            );
+
+            // Assert tabs still unchanged
+            let post_double_tab_snapshots: Vec<TabSnapshot> = state.tabs.iter()
+                .map(|t: &RequestTabState| t.to_snapshot())
+                .collect();
+            prop_assert_eq!(
+                &post_double_tab_snapshots,
+                &pre_tab_snapshots,
+                "tabs must not change after double-toggle"
+            );
+        }
+    }
+}
+
+// Feature: ux-flow-redesign, Property 5: Collection selection from WorkspaceSection transitions focus
+#[cfg(test)]
+mod collection_selection_workspace_property_tests {
+    //! Feature: ux-flow-redesign, Property 5: Collection selection from WorkspaceSection transitions focus
+    //! Validates: Requirements 4.3
+
+    use super::*;
+    use midway_core::domain::workspace::{CollectionSummary, CollectionWithRequests};
+    use midway_core::infra::sqlite_repository::SqliteRepository;
+    use midway_core::runtime::request_executor::RequestExecutorHandle;
+    use midway_core::runtime::secret_executor::SecretExecutorHandle;
+    use midway_core::domain::cookies::CookieJarHandle;
+    use crate::state::AppState;
+    use proptest::prelude::*;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    /// Build a minimal AppState for testing (opens a temp SQLite DB).
+    fn build_test_app_state() -> AppState {
+        let temp_file = tempfile::NamedTempFile::new()
+            .expect("failed to create temp file for test AppState");
+        let db_path = temp_file.path().to_path_buf();
+
+        let runtime = tokio::runtime::Runtime::new()
+            .expect("failed to create tokio runtime for test AppState");
+
+        let app_state = runtime.block_on(async {
+            let repository = SqliteRepository::open(&db_path)
+                .await
+                .expect("failed to open SqliteRepository for test");
+
+            let client = reqwest::Client::builder()
+                .build()
+                .expect("failed to build reqwest client for test");
+
+            AppState {
+                repository,
+                request_executor: RequestExecutorHandle::spawn(client),
+                secret_executor: SecretExecutorHandle::spawn("midway-test".to_string()),
+                cookie_jar: CookieJarHandle::new(),
+            }
+        });
+
+        drop(temp_file);
+        app_state
+    }
+
+    /// Build a test Midway state with focus set to WorkspaceSection and the given collections.
+    fn build_test_midway_workspace_focus(
+        app_state: Arc<AppState>,
+        collections: Vec<CollectionWithRequests>,
+    ) -> Midway {
+        Midway {
+            app_state,
+            workspace: midway_core::domain::workspace::WorkspaceSnapshot {
+                collections,
+                environments: Vec::new(),
+                history: Vec::new(),
+                secrets: Vec::new(),
+            },
+            tabs: vec![RequestTabState::from_draft(crate::curl::create_blank_draft())],
+            active_tab: Some(0),
+            closed_tabs: VecDeque::new(),
+            workspace_panel: WorkspacePanelState::default(),
+            palette: PaletteState::default(),
+            runner: None,
+            session: SessionStoreState::default(),
+            theme_mode: Default::default(),
+            main_content_focus: MainContentFocus::WorkspaceSection,
+            updater: UpdaterState::default(),
+            crash_log: Vec::new(),
+            unsaved_changes_prompt: None,
+            active_collection_id: None,
+            top_bar_mode: TopBarMode::default(),
+            tree: TreeViewState::default(),
+            create_collection_prompt: None,
+            save_request_prompt: None,
+            workspace_crud_dialog: None,
+            panel_dragging: None,
+            panel_hovered: None,
+        }
+    }
+
+    /// Strategy to generate a valid collection id.
+    fn collection_id_strategy() -> impl Strategy<Value = String> {
+        "[a-z0-9]{1,20}".prop_map(|s| s.to_string())
+    }
+
+    /// Strategy to generate a CollectionWithRequests with a given id.
+    fn collection_with_id(id: String) -> CollectionWithRequests {
+        CollectionWithRequests {
+            collection: CollectionSummary {
+                id,
+                name: "test-collection".to_string(),
+                request_count: 0,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders: Vec::new(),
+            requests: Vec::new(),
+        }
+    }
+
+    /// Strategy to generate a non-empty Vec of CollectionWithRequests with unique ids,
+    /// returning both the collections and the list of their ids.
+    fn non_empty_collections_strategy() -> impl Strategy<Value = Vec<CollectionWithRequests>> {
+        proptest::collection::vec(collection_id_strategy(), 1..=5)
+            .prop_map(|ids| {
+                let mut seen = std::collections::HashSet::new();
+                ids.into_iter()
+                    .filter(|id| seen.insert(id.clone()))
+                    .map(|id| collection_with_id(id))
+                    .collect::<Vec<_>>()
+            })
+            .prop_filter("must have at least one collection", |v| !v.is_empty())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// Property 5: Collection selection from WorkspaceSection transitions focus.
+        ///
+        /// **Validates: Requirements 4.3**
+        ///
+        /// For any application state where `main_content_focus` is `WorkspaceSection`
+        /// and a valid collection id is selected, after handling
+        /// `CollectionSelected(id)`, `main_content_focus == RequestTab` and
+        /// `active_collection_id == Some(id)`.
+        #[test]
+        fn property_5_collection_selection_from_workspace_transitions_focus(
+            collections in non_empty_collections_strategy(),
+            index in 0usize..5,
+        ) {
+            let app_state = Arc::new(build_test_app_state());
+            let valid_index = index % collections.len();
+            let selected_id = collections[valid_index].collection.id.clone();
+
+            let mut state = build_test_midway_workspace_focus(
+                app_state,
+                collections,
+            );
+
+            // Precondition: focus is WorkspaceSection
+            prop_assert_eq!(
+                state.main_content_focus,
+                MainContentFocus::WorkspaceSection,
+                "Precondition: state must start with WorkspaceSection focus"
+            );
+
+            // Act: handle CollectionSelected message
+            let _task = update_activity_bar(
+                &mut state,
+                ActivityBarMessage::CollectionSelected(selected_id.clone()),
+            );
+
+            // Assert: focus transitions to RequestTab
+            prop_assert_eq!(
+                state.main_content_focus,
+                MainContentFocus::RequestTab,
+                "After CollectionSelected from WorkspaceSection, focus must be RequestTab"
+            );
+
+            // Assert: active_collection_id is set to the selected id
+            prop_assert_eq!(
+                state.active_collection_id.as_deref(),
+                Some(selected_id.as_str()),
+                "After CollectionSelected, active_collection_id must be Some(selected_id). \
+                 Got: {:?}, expected: Some({:?})",
+                state.active_collection_id,
+                selected_id,
+            );
         }
     }
 }

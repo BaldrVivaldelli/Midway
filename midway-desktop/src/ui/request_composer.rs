@@ -12,13 +12,57 @@
 //! Ver requisitos: 2.1, 2.2, 2.3, 2.4, 2.5.
 
 use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
-use iced::{Color, Element, Length};
+use iced::{font, Border, Color, Element, Font, Length};
 
-use midway_core::domain::http::{ApiKeyPlacement, AuthConfig, HttpMethod, KeyValueRow, RequestPreview};
+use midway_core::domain::http::{
+    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow, RequestPreview,
+};
 use midway_core::domain::testing::{AssertionOperator, AssertionSource, ResponseAssertion};
 
 use crate::app::{Message, Midway, RequestComposerMessage, RequestTab, RequestTabState};
+use crate::ui::design_system::{contrast_text_color, method_color, DesignSystem, TextStyle};
 use crate::ui::tab_bar;
+
+fn font_for(style: &TextStyle) -> Font {
+    Font {
+        family: if style.monospace {
+            font::Family::Monospace
+        } else {
+            font::Family::SansSerif
+        },
+        weight: style.weight,
+        ..Font::DEFAULT
+    }
+}
+
+/// Devuelve el nombre que se muestra junto al selector de método.
+///
+/// Los requests creados desde cURL/OpenAPI pueden traer nombres como
+/// `POST posts 1`. Como el toolbar ya muestra `POST` en su selector, repetir
+/// ese prefijo añade ruido (`POST POST posts 1`). Solo se normaliza la
+/// presentación: el nombre persistido permanece intacto.
+fn display_request_name(name: &str, method: HttpMethod) -> &str {
+    let trimmed = name.trim();
+    let Some(separator) = trimmed.find(char::is_whitespace) else {
+        return trimmed;
+    };
+
+    let (prefix, remainder) = trimmed.split_at(separator);
+    let remainder = remainder.trim_start();
+
+    if !remainder.is_empty() && prefix.eq_ignore_ascii_case(&method.to_string()) {
+        remainder
+    } else {
+        trimmed
+    }
+}
+
+/// Altura cómoda para editar JSON/texto dentro del panel scrolleable.
+///
+/// El contenedor exterior ya administra overflow en ventanas bajas, por lo
+/// que este tamaño aprovecha las pantallas habituales sin perder acceso a
+/// controles cuando la ventana es pequeña.
+const BODY_TEXT_EDITOR_HEIGHT: f32 = 420.0;
 
 /// Ítem del `pick_list` de environment: envuelve el id del environment
 /// (`None` = "sin environment") junto con el nombre a mostrar, ya que
@@ -36,39 +80,107 @@ impl std::fmt::Display for EnvironmentOption {
     }
 }
 
-/// Construye la fila superior del `Request_Composer` para la tab activa.
-///
-/// El llamador (`app::view`) es responsable de solo invocar esta función
-/// cuando existe una tab activa (`Midway::active_tab` es `Some`).
-pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Message> {
+/// Encabezado del request: nombre, URL, ejecución, guardado y environment.
+pub fn toolbar<'a>(
+    state: &'a Midway,
+    active_tab_index: usize,
+    ds: &DesignSystem,
+) -> Element<'a, Message> {
     let active_tab = &state.tabs[active_tab_index];
     let draft = &active_tab.draft;
+    let body = ds.typography.body;
+    let body_font = font_for(&body);
+    let control_radius = ds.radius.control;
+    let accent = ds.palette.accent;
 
+    // --- URL bar: method pill + url input + send pill ---
+    let m_color = method_color(draft.method);
+    let m_text_color = contrast_text_color(m_color);
     let method_picker = pick_list(
         HttpMethod::ALL,
         Some(draft.method),
         |method| Message::RequestComposer(RequestComposerMessage::MethodChanged(method)),
     )
-    .placeholder("Método");
+    .placeholder("GET")
+    .text_size(body.size)
+    .font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+    .style(move |theme, status| {
+        let mut style = pick_list::default(theme, status);
+        style.border = Border {
+            radius: (control_radius + 4.0).into(),
+            ..style.border
+        };
+        style.background = m_color.into();
+        style.text_color = m_text_color;
+        style
+    });
 
-    // `on_paste` captura específicamente el evento de "pegar" del
-    // `text_input` (distinto de `on_input`, que dispara en cada tecla); el
-    // enrutamiento del Curl_Importer (Tarea 3.5) se despacha solo desde ahí.
-    let url_input = text_input("https://api.ejemplo.com/recurso", &draft.url)
+    let url_input = text_input("https://api.example.com/endpoint", &draft.url)
         .on_input(|url| Message::RequestComposer(RequestComposerMessage::UrlChanged(url)))
         .on_paste(|pasted| Message::RequestComposer(RequestComposerMessage::UrlPasted(pasted)))
-        .width(Length::Fill);
+        .width(Length::Fill)
+        .size(body.size)
+        .font(body_font)
+        .style(move |theme, status| {
+            let mut style = text_input::default(theme, status);
+            style.border = Border {
+                radius: control_radius.into(),
+                ..style.border
+            };
+            style
+        });
 
-    let send_button = button(text(if active_tab.sending { "Sending…" } else { "Send" }));
+    let send_text_color = contrast_text_color(accent);
+    let send_button_content = if active_tab.sending {
+        text("Sending...").size(body.size).font(body_font)
+    } else {
+        text("Send").size(body.size).font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+    };
+
+    let sending = active_tab.sending;
+    let send_button = button(send_button_content)
+        .padding([ds.spacing.sm, ds.spacing.lg])
+        .style(move |_theme, _status| {
+            let bg = if sending {
+                // "Sending" state: dimmed accent (50% opacity blend with black)
+                Color::from_rgba(accent.r * 0.5, accent.g * 0.5, accent.b * 0.5, 0.7)
+            } else {
+                accent
+            };
+            let txt = if sending {
+                Color { a: 0.6, ..send_text_color }
+            } else {
+                send_text_color
+            };
+            button::Style {
+                background: Some(bg.into()),
+                text_color: txt,
+                border: Border {
+                    radius: (control_radius + 4.0).into(),
+                    ..Border::default()
+                },
+                ..button::Style::default()
+            }
+        });
     let send_button = if active_tab.sending {
         send_button
     } else {
         send_button.on_press(Message::RequestComposer(RequestComposerMessage::SendPressed))
     };
 
+    let saved = active_tab
+        .saved_draft
+        .as_ref()
+        .is_some_and(|saved_draft| saved_draft == draft);
+    let save_label = if saved { "Guardado" } else { "Guardar" };
+    let save_button = button(text(save_label).size(body.size).font(body_font))
+        .padding([ds.spacing.sm, ds.spacing.md])
+        .on_press(Message::RequestComposer(RequestComposerMessage::SaveRequested));
+
+    // Environment + settings on the right
     let environment_options: Vec<EnvironmentOption> = std::iter::once(EnvironmentOption {
         id: None,
-        name: "Sin environment".to_string(),
+        name: "No Environment".to_string(),
     })
     .chain(state.workspace.environments.iter().map(|environment| EnvironmentOption {
         id: Some(environment.id.clone()),
@@ -88,49 +200,80 @@ pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Messa
             Message::RequestComposer(RequestComposerMessage::EnvironmentChanged(option.id))
         },
     )
-    .placeholder("Sin environment");
+    .placeholder("No Environment")
+    .text_size(body.size)
+    .font(body_font)
+    .style(move |theme, status| {
+        let mut style = pick_list::default(theme, status);
+        style.border = Border {
+            radius: control_radius.into(),
+            ..style.border
+        };
+        style
+    });
 
-    let settings_button = button(text("⚙"))
+    let settings_button = button(text("⚙").size(body.size).font(body_font))
+        .padding(ds.spacing.sm)
         .on_press(Message::RequestComposer(RequestComposerMessage::SettingsPressed));
 
-    let top_row = row![
-        method_picker,
-        url_input,
-        send_button,
-        environment_picker,
-        settings_button,
+    let url_bar = row![method_picker, url_input, send_button]
+        .spacing(ds.spacing.sm)
+        .align_y(iced::alignment::Vertical::Center);
+    let request_actions = row![save_button, environment_picker, settings_button]
+        .spacing(ds.spacing.sm)
+        .align_y(iced::alignment::Vertical::Center);
+
+    let request_name = if draft.name.trim().is_empty() {
+        "Nueva petición"
+    } else {
+        display_request_name(&draft.name, draft.method)
+    };
+    let save_state = match active_tab.saved_draft.as_ref() {
+        Some(_) if saved => "Guardado",
+        Some(_) => "Cambios sin guardar",
+        None => "Sin guardar",
+    };
+    let title = row![
+        text(request_name)
+            .size(ds.typography.subtitle.size)
+            .color(ds.palette.text_primary),
+        text(save_state)
+            .size(ds.typography.secondary.size)
+            .color(ds.palette.text_secondary),
     ]
-    .spacing(8);
+    .spacing(ds.spacing.sm)
+    .align_y(iced::alignment::Vertical::Center);
 
-    // Criterio 2.19: si el último pegado de cURL falló al parsear, se
-    // muestra el mensaje de error debajo de la fila superior sin haber
-    // modificado el contenido existente de la URL. Análogamente (Tarea
-    // 3.18), si la última ejecución de Send falló, se muestra su mensaje.
-    let mut content = column![top_row].spacing(4);
+    column![title, url_bar, request_actions]
+        .spacing(ds.spacing.sm)
+        .width(Length::Fill)
+        .into()
+}
 
+/// Editor de Params/Headers/Auth/Body/Tests, separado del toolbar para que
+/// pueda ubicarse junto al inspector de respuesta en pantallas amplias.
+pub fn editor<'a>(
+    state: &'a Midway,
+    active_tab_index: usize,
+    ds: &DesignSystem,
+) -> Element<'a, Message> {
+    let active_tab = &state.tabs[active_tab_index];
+    let mut content = column![config_tabs(active_tab, ds)]
+        .spacing(ds.spacing.md)
+        .width(Length::Fill);
+
+    // Error messages
     if let Some(error_message) = &active_tab.curl_paste_error {
         content = content.push(text(error_message.clone()).color(Color::from_rgb(0.8, 0.1, 0.1)));
     }
-
     if let Some(error_message) = &active_tab.send_error {
         content = content.push(text(error_message.clone()).color(Color::from_rgb(0.8, 0.1, 0.1)));
     }
-
     if let Some(error_message) = &active_tab.preview_error {
         content = content.push(text(error_message.clone()).color(Color::from_rgb(0.8, 0.1, 0.1)));
     }
 
-    // Tarea 5.1 (Requisito 3.1): contenedor de tabs de configuración del
-    // request (Params/Headers/Auth/Body/Tests). Solo el widget de tabs y el
-    // cambio de tab activa; el contenido real de cada tab (editor de
-    // params/headers, auth, tests) se implementa en tareas posteriores
-    // (5.4, 5.6, 5.8) y por ahora muestra un placeholder.
-    content = content.push(config_tabs(active_tab));
-
-    // Tarea 3.20 (Requisito 2.18): preview drawer. Se muestra debajo de la
-    // fila superior siempre que `tab.preview` esté poblado (drawer
-    // "abierto"); `tab.preview` en `None` significa "drawer cerrado" (no se
-    // usa un booleano separado: ver diseño de la Tarea 3.20).
+    // Preview drawer
     if let Some(preview) = &active_tab.preview {
         content = content.push(preview_view(preview));
     }
@@ -146,7 +289,7 @@ pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Messa
 /// La tab Auth (Tarea 5.4), las tabs Params/Headers (Tarea 5.6) y la tab
 /// Tests (Tarea 5.8) ya tienen su editor real; solo Body sigue mostrando un
 /// placeholder.
-fn config_tabs(active_tab: &RequestTabState) -> Element<'_, Message> {
+fn config_tabs<'a>(active_tab: &'a RequestTabState, ds: &DesignSystem) -> Element<'a, Message> {
     let entries = vec![
         (
             RequestTab::Params,
@@ -159,7 +302,7 @@ fn config_tabs(active_tab: &RequestTabState) -> Element<'_, Message> {
             key_value_editor(&active_tab.draft.headers, KeyValueTarget::Headers),
         ),
         (RequestTab::Auth, "Auth", auth_tab(active_tab)),
-        (RequestTab::Body, "Body", config_tab_placeholder("Body")),
+        (RequestTab::Body, "Body", body_tab(active_tab)),
         (
             RequestTab::Tests,
             "Tests",
@@ -167,9 +310,20 @@ fn config_tabs(active_tab: &RequestTabState) -> Element<'_, Message> {
         ),
     ];
 
-    tab_bar::tabs(entries, &active_tab.active_request_tab, |tab| {
-        Message::RequestComposer(RequestComposerMessage::ConfigTabSelected(tab))
-    })
+    // El tab bar compartido usa separación generosa para vistas de ancho
+    // completo. El composer comparte espacio con la respuesta, así que usa
+    // tokens compactos para conservar las cinco etiquetas completas incluso
+    // en un panel de unos 280 px.
+    let mut compact_ds = *ds;
+    compact_ds.spacing.lg = ds.spacing.xs;
+    compact_ds.spacing.sm = ds.spacing.xs;
+
+    tab_bar::tabs(
+        entries,
+        &active_tab.active_request_tab,
+        |tab| Message::RequestComposer(RequestComposerMessage::ConfigTabSelected(tab)),
+        &compact_ds,
+    )
 }
 
 /// Ítem del `pick_list` de tipo de autenticación (Tarea 5.4, Requisitos
@@ -375,10 +529,162 @@ fn key_value_editor(rows: &[KeyValueRow], target: KeyValueTarget) -> Element<'_,
     content.into()
 }
 
-/// Contenido placeholder de una tab de configuración del request, hasta que
-/// la tarea correspondiente (Body) implemente su editor real.
-fn config_tab_placeholder(tab_name: &'static str) -> Element<'static, Message> {
-    text(format!("Tab {} (contenido en tareas posteriores)", tab_name)).into()
+/// Envoltura de `domain::http::BodyMode` para el `pick_list` de modo de la
+/// tab Body (Requisito 3.1): `BodyMode` no implementa `Display` en
+/// `midway-core` (no es su responsabilidad presentacional), así que se
+/// envuelve localmente igual que `AuthKind`/`ApiKeyPlacementOption`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BodyModeOption(BodyMode);
+
+impl std::fmt::Display for BodyModeOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self.0 {
+            BodyMode::None => "None",
+            BodyMode::Json => "JSON",
+            BodyMode::Text => "Text",
+            BodyMode::FormData => "Form Data",
+        };
+        f.write_str(label)
+    }
+}
+
+const BODY_MODE_OPTIONS: [BodyModeOption; 4] = [
+    BodyModeOption(BodyMode::None),
+    BodyModeOption(BodyMode::Json),
+    BodyModeOption(BodyMode::Text),
+    BodyModeOption(BodyMode::FormData),
+];
+
+/// Envoltura de `domain::http::FormDataFieldKind` para el `pick_list` de
+/// tipo de campo del editor FormData (Text/File), mismo motivo que
+/// `BodyModeOption`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FormDataFieldKindOption(FormDataFieldKind);
+
+impl std::fmt::Display for FormDataFieldKindOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self.0 {
+            FormDataFieldKind::Text => "Text",
+            FormDataFieldKind::File => "File",
+        };
+        f.write_str(label)
+    }
+}
+
+const FORM_DATA_FIELD_KIND_OPTIONS: [FormDataFieldKindOption; 2] = [
+    FormDataFieldKindOption(FormDataFieldKind::Text),
+    FormDataFieldKindOption(FormDataFieldKind::File),
+];
+
+/// Construye el editor de la tab Body: `pick_list` de modo (None/Json/
+/// Text/FormData) sobre `draft.body.mode`, seguido del editor
+/// correspondiente al modo seleccionado.
+///
+/// - `None`: sin contenido adicional (la petición no lleva body).
+/// - `Json`/`Text`: `Text_Editor_Component` (`ui::text_editor`) con
+///   resaltado de sintaxis JSON, sincronizado con `draft.body.value` vía
+///   `RequestComposerMessage::BodyTextAction`.
+/// - `FormData`: editor de filas `domain::http::FormDataRow` (checkbox
+///   `enabled` + `text_input` de key + `pick_list` Text/File + `text_input`
+///   de value, que para campos File representa el path del archivo en
+///   disco) y botón "+ Agregar campo".
+fn body_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
+    let mode_picker = pick_list(
+        BODY_MODE_OPTIONS,
+        Some(BodyModeOption(active_tab.draft.body.mode)),
+        |option: BodyModeOption| Message::RequestComposer(RequestComposerMessage::BodyModeChanged(option.0)),
+    )
+    .placeholder("Modo de body");
+
+    let mut content = column![mode_picker].spacing(8).width(Length::Fill);
+
+    content = match active_tab.draft.body.mode {
+        BodyMode::None => content,
+        BodyMode::Json | BodyMode::Text => {
+            let editor = active_tab
+                .body_editor
+                .view()
+                .height(Length::Fixed(BODY_TEXT_EDITOR_HEIGHT))
+                .on_action(|action| Message::RequestComposer(RequestComposerMessage::BodyTextAction(action)));
+            content.push(editor)
+        }
+        BodyMode::FormData => content.push(form_data_editor(&active_tab.draft.body.form_data)),
+    };
+
+    content.into()
+}
+
+/// Editor de filas del modo FormData de la tab Body (mismo patrón que
+/// `key_value_editor`, pero con un `pick_list` adicional de tipo Text/File
+/// por fila).
+fn form_data_editor(rows: &[FormDataRow]) -> Element<'_, Message> {
+    let mut content = column![].spacing(4);
+
+    for row_data in rows {
+        let row_id = row_data.id.clone();
+        let id_for_key = row_id.clone();
+        let id_for_value = row_id.clone();
+        let id_for_enabled = row_id.clone();
+        let id_for_kind = row_id.clone();
+        let id_for_remove = row_id.clone();
+
+        let enabled_checkbox = checkbox(row_data.enabled).on_toggle(move |_| {
+            Message::RequestComposer(RequestComposerMessage::FormDataRowEnabledToggled {
+                row_id: id_for_enabled.clone(),
+            })
+        });
+
+        let key_input = text_input("Key", &row_data.key)
+            .on_input(move |key| {
+                Message::RequestComposer(RequestComposerMessage::FormDataRowKeyChanged {
+                    row_id: id_for_key.clone(),
+                    key,
+                })
+            })
+            .width(Length::Fill);
+
+        let kind_picker = pick_list(
+            FORM_DATA_FIELD_KIND_OPTIONS,
+            Some(FormDataFieldKindOption(row_data.kind)),
+            move |option: FormDataFieldKindOption| {
+                Message::RequestComposer(RequestComposerMessage::FormDataRowKindChanged {
+                    row_id: id_for_kind.clone(),
+                    kind: option.0,
+                })
+            },
+        )
+        .placeholder("Tipo");
+
+        let value_placeholder = match row_data.kind {
+            FormDataFieldKind::Text => "Value",
+            FormDataFieldKind::File => "Path del archivo",
+        };
+        let value_input = text_input(value_placeholder, &row_data.value)
+            .on_input(move |value| {
+                Message::RequestComposer(RequestComposerMessage::FormDataRowValueChanged {
+                    row_id: id_for_value.clone(),
+                    value,
+                })
+            })
+            .width(Length::Fill);
+
+        let remove_button = button(text("×")).on_press(Message::RequestComposer(
+            RequestComposerMessage::FormDataRowRemoved {
+                row_id: id_for_remove.clone(),
+            },
+        ));
+
+        content = content.push(
+            row![enabled_checkbox, key_input, kind_picker, value_input, remove_button].spacing(8),
+        );
+    }
+
+    let add_button =
+        button(text("+ Agregar campo")).on_press(Message::RequestComposer(RequestComposerMessage::FormDataRowAdded));
+
+    content = content.push(add_button);
+
+    content.into()
 }
 
 /// Envoltura de `domain::testing::AssertionSource` para el `pick_list` de
@@ -582,4 +888,27 @@ fn preview_view(preview: &RequestPreview) -> Element<'_, Message> {
     content = content.push(text(preview.curl_command.clone()));
 
     content.into()
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn matching_method_prefix_is_not_repeated_in_the_title() {
+        assert_eq!(display_request_name("POST posts 1", HttpMethod::POST), "posts 1");
+        assert_eq!(display_request_name("post   posts 1", HttpMethod::POST), "posts 1");
+    }
+
+    #[test]
+    fn meaningful_or_different_prefix_is_preserved() {
+        assert_eq!(display_request_name("POST", HttpMethod::POST), "POST");
+        assert_eq!(display_request_name("GET posts 1", HttpMethod::POST), "GET posts 1");
+        assert_eq!(display_request_name("Public posts", HttpMethod::POST), "Public posts");
+    }
+
+    #[test]
+    fn body_editor_uses_a_workspace_sized_height() {
+        assert!(BODY_TEXT_EDITOR_HEIGHT >= 360.0);
+    }
 }

@@ -7,6 +7,7 @@
 
 use midway_core::{
     app::errors::{AppError, AppResult},
+    domain::cookies::CookieJarHandle,
     infra::sqlite_repository::SqliteRepository,
     runtime::{request_executor::RequestExecutorHandle, secret_executor::SecretExecutorHandle},
 };
@@ -20,6 +21,7 @@ pub struct AppState {
     pub repository: SqliteRepository,
     pub request_executor: RequestExecutorHandle,
     pub secret_executor: SecretExecutorHandle,
+    pub cookie_jar: CookieJarHandle,
 }
 
 impl AppState {
@@ -33,9 +35,11 @@ impl AppState {
         let db_path = data_dir.join("workspace.sqlite3");
         let repository = SqliteRepository::open(&db_path).await?;
 
+        let cookie_jar = CookieJarHandle::new();
+
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::limited(10))
-            .cookie_store(true)
+            .cookie_provider(cookie_jar.provider())
             .build()
             .map_err(|error| AppError::Http(error.to_string()))?;
 
@@ -43,6 +47,7 @@ impl AppState {
             repository,
             request_executor: RequestExecutorHandle::spawn(client),
             secret_executor: SecretExecutorHandle::spawn(APP_NAME.to_string()),
+            cookie_jar,
         })
     }
 }

@@ -1,28 +1,40 @@
-//! `Response_Inspector` (Tarea 3.9, Fase 1): status/tiempo/tamaño y tabs
-//! Body/Headers/Tests de la respuesta de la tab de request activa.
+//! `Response_Inspector`: status/tiempo/tamaño y tabs Body/Headers/Cookies/Tests
+//! de la respuesta de la tab de request activa.
 //!
-//! Muestra, al finalizar una petición, el código de status, el tiempo de
-//! respuesta en milisegundos y el tamaño del payload en bytes (Requisito
-//! 2.10), además de tabs separadas para Body, Headers y Tests, donde la tab
-//! Tests muestra, para cada assertion configurada, si su evaluación resultó
-//! aprobada o fallida (Requisito 2.11).
+//! Muestra, al finalizar una petición, el código de status (coloreado con
+//! `status_color`), el tiempo de respuesta en milisegundos y el tamaño del
+//! payload en bytes (Requisito 2.10), además de tabs separadas para Body,
+//! Headers, Cookies y Tests. La tab Cookies lee el `CookieJarHandle` para
+//! la `final_url` de la respuesta (Requisito 9.1–9.3). No se incluyen tabs
+//! Preview ni Timeline (Requisito 12.5, 12.6).
 //!
-//! Esta tarea es de solo presentación ("passthrough"): la ejecución real de
-//! la petición que popula `RequestTabState::response` se implementa en la
-//! Tarea 3.18. Hasta entonces, esta vista muestra el estado vacío.
-//!
-//! Ver diseño: "Components and Interfaces > Request_Composer y
-//! Response_Inspector (Fase 1)"; "Flujo de una request (Fase 1)".
-//! Ver requisitos: 2.10, 2.11.
+//! Ver diseño: "Components and Interfaces > Response_Inspector (tab Cookies)".
+//! Ver requisitos: 2.10, 2.11, 9.1, 9.2, 9.3, 9.4, 12.5, 12.6.
 
-use iced::widget::{column, row, text};
-use iced::{Element, Length};
+use iced::widget::{column, container, row, text};
+use iced::{font, Element, Font, Length};
 
+use midway_core::domain::cookies::CookiePair;
 use midway_core::domain::http::ResolvedPair;
 use midway_core::domain::testing::AssertionResult;
 
-use crate::app::{Message, Midway, ResponseInspectorMessage, ResponseInspectorTab, ResponseOutcome};
+use crate::app::{
+    Message, Midway, ResponseInspectorMessage, ResponseInspectorTab, ResponseOutcome,
+};
+use crate::ui::design_system::{status_color, DesignSystem, TextStyle};
 use crate::ui::tab_bar;
+
+fn font_for(style: &TextStyle) -> Font {
+    Font {
+        family: if style.monospace {
+            font::Family::Monospace
+        } else {
+            font::Family::SansSerif
+        },
+        weight: style.weight,
+        ..Font::DEFAULT
+    }
+}
 
 /// Construye el `Response_Inspector` para la tab de request activa.
 ///
@@ -32,24 +44,84 @@ pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Messa
     let tab_state = &state.tabs[active_tab_index];
 
     match &tab_state.response {
-        None => text("Sin respuesta aún").into(),
-        Some(outcome) => column![summary_row(outcome), response_tabs(outcome, tab_state.response_tab)]
-            .spacing(12)
-            .into(),
+        None => {
+            let ds = DesignSystem::for_mode(state.theme_mode);
+            container(
+                text("Sin respuesta aún")
+                    .size(ds.typography.body.size)
+                    .color(ds.palette.text_secondary),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+        }
+        Some(outcome) => {
+            let ds = DesignSystem::for_mode(state.theme_mode);
+            let (status, status_text, duration_ms, size_bytes) = summary_line(outcome);
+            let secondary = ds.typography.secondary;
+            let secondary_font = font_for(&secondary);
+            let body = ds.typography.body;
+            let body_font = font_for(&body);
+
+            let status_ok = status < 400;
+            let check_icon = if status_ok { "✓" } else { "✗" };
+            let status_clr = status_color(&ds, status);
+
+            // Status badge: ✓ 201 Created  323 ms  65 bytes
+            let status_row = row![
+                text(check_icon).size(body.size).font(body_font).color(status_clr),
+                text(format!("{} {}", status, status_text))
+                    .size(body.size)
+                    .font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+                    .color(status_clr),
+                text(format!("{} ms", duration_ms))
+                    .size(secondary.size)
+                    .font(secondary_font)
+                    .color(ds.palette.text_secondary),
+                text(format!("{} bytes", size_bytes))
+                    .size(secondary.size)
+                    .font(secondary_font)
+                    .color(ds.palette.text_secondary),
+            ]
+            .spacing(ds.spacing.sm)
+            .align_y(iced::alignment::Vertical::Center);
+
+            // Response tabs
+            let tabs = response_tabs(state, outcome, tab_state.response_tab, &ds);
+
+            column![status_row, tabs]
+                .spacing(ds.spacing.sm)
+                .width(Length::Fill)
+                .into()
+        }
     }
 }
 
 /// Fila con status, tiempo de respuesta y tamaño (Requisito 2.10). Los
 /// valores se muestran tal cual vienen en `ResponseEnvelope`, sin
-/// transformación.
-fn summary_row(outcome: &ResponseOutcome) -> Element<'_, Message> {
+/// transformación. Usa `subtitle` y separación `md` para distinguir el
+/// resumen del cuerpo de la respuesta (Requisito 3.2).
+#[allow(dead_code)]
+fn summary_row<'a>(outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, Message> {
     let (status, status_text, duration_ms, size_bytes) = summary_line(outcome);
+    let subtitle = ds.typography.subtitle;
+    let subtitle_font = font_for(&subtitle);
+
     row![
-        text(format!("{} {}", status, status_text)),
-        text(format!("{} ms", duration_ms)),
-        text(format!("{} bytes", size_bytes)),
+        text(format!("{} {}", status, status_text))
+            .size(subtitle.size)
+            .font(subtitle_font)
+            .color(status_color(ds, status)),
+        text(format!("{} ms", duration_ms))
+            .size(subtitle.size)
+            .font(subtitle_font),
+        text(format!("{} bytes", size_bytes))
+            .size(subtitle.size)
+            .font(subtitle_font),
     ]
-    .spacing(16)
+    .spacing(ds.spacing.md)
     .into()
 }
 
@@ -70,25 +142,82 @@ fn summary_line(outcome: &ResponseOutcome) -> (u16, &str, u64, u64) {
 /// 3.1), usando el widget compartido `ui::tab_bar` (envoltura de
 /// `iced_aw::{TabBar, Tabs}`) en lugar de botones simples, reutilizando el
 /// mismo widget que las tabs de configuración del `Request_Composer`.
-fn response_tabs(outcome: &ResponseOutcome, active: ResponseInspectorTab) -> Element<'_, Message> {
+fn response_tabs<'a>(
+    state: &'a Midway,
+    outcome: &'a ResponseOutcome,
+    active: ResponseInspectorTab,
+    ds: &DesignSystem,
+) -> Element<'a, Message> {
     let entries = vec![
-        (ResponseInspectorTab::Body, "Body", body_tab(outcome)),
-        (ResponseInspectorTab::Headers, "Headers", headers_tab(outcome)),
+        (ResponseInspectorTab::Body, "Body", body_tab(outcome, ds)),
+        (
+            ResponseInspectorTab::Headers,
+            "Headers",
+            headers_tab(outcome),
+        ),
+        (
+            ResponseInspectorTab::Cookies,
+            "Cookies",
+            cookies_tab(state, outcome, ds),
+        ),
         (ResponseInspectorTab::Tests, "Tests", tests_tab(outcome)),
     ];
 
-    tab_bar::tabs(entries, &active, |tab| {
-        Message::ResponseInspector(ResponseInspectorMessage::TabSelected(tab))
-    })
+    tab_bar::tabs(
+        entries,
+        &active,
+        |tab| Message::ResponseInspector(ResponseInspectorMessage::TabSelected(tab)),
+        ds,
+    )
 }
 
 /// Tab Body: muestra `response.body_text` como texto plano. La
 /// resaltación de sintaxis JSON vía `Text_Editor_Component`
 /// (`ui::text_editor`) se integra en una tarea posterior.
-fn body_tab(outcome: &ResponseOutcome) -> Element<'_, Message> {
+fn body_tab<'a>(outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, Message> {
+    let monospace = ds.typography.monospace;
     text(outcome.response.body_text.as_str())
+        .size(monospace.size)
+        .font(font_for(&monospace))
         .width(Length::Fill)
         .into()
+}
+
+/// Tab Cookies: muestra las cookies del `CookieJarHandle` para la
+/// `final_url` de la respuesta activa (Req 9.2, 9.3).
+///
+/// - ≥1 cookie: filas nombre/valor en el orden devuelto por el jar.
+/// - 0 cookies: estado vacío "No hay cookies almacenadas" (con precedencia, Req 9.3).
+fn cookies_tab<'a>(state: &'a Midway, outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, Message> {
+    let cookies = state
+        .app_state
+        .cookie_jar
+        .read_for_url(&outcome.response.final_url);
+
+    if cookies.is_empty() {
+        return text("No hay cookies almacenadas").into();
+    }
+
+    let body = ds.typography.body;
+    let body_font = font_for(&body);
+
+    let rows: Vec<Element<'a, Message>> = cookies
+        .into_iter()
+        .map(|cookie: CookiePair| {
+            row![
+                text(cookie.name)
+                    .size(body.size)
+                    .font(body_font),
+                text(cookie.value)
+                    .size(body.size)
+                    .font(body_font),
+            ]
+            .spacing(ds.spacing.sm)
+            .into()
+        })
+        .collect();
+
+    column(rows).spacing(4).width(Length::Fill).into()
 }
 
 /// Tab Headers: lista de filas `key: value`.

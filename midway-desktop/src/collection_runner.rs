@@ -444,6 +444,7 @@ mod tests {
     //! consistentes en cada evento.
 
     use super::*;
+    use midway_core::domain::cookies::CookieJarHandle;
     use midway_core::domain::http::HttpMethod;
     use midway_core::domain::testing::{AssertionOperator, AssertionSource, ResponseAssertion};
     use midway_core::domain::workspace::SaveRequestInput;
@@ -473,6 +474,7 @@ mod tests {
             repository,
             request_executor: RequestExecutorHandle::spawn(client),
             secret_executor: SecretExecutorHandle::spawn("midway-test-collection-runner".to_string()),
+            cookie_jar: CookieJarHandle::new(),
         };
 
         drop(temp_file);
@@ -514,6 +516,7 @@ mod tests {
                 .save_request(SaveRequestInput {
                     request_id: None,
                     collection_id: collection.id.clone(),
+                    folder_id: None,
                     draft: blank_draft_for(format!("{}{}", mock_server.uri(), path)),
                 })
                 .await
@@ -702,6 +705,7 @@ mod tests {
             .save_request(SaveRequestInput {
                 request_id: None,
                 collection_id: collection.id.clone(),
+                folder_id: None,
                 draft: failing_assertion_draft,
             })
             .await
@@ -717,6 +721,7 @@ mod tests {
             .save_request(SaveRequestInput {
                 request_id: None,
                 collection_id: collection.id.clone(),
+                folder_id: None,
                 draft: network_error_draft,
             })
             .await
@@ -739,6 +744,7 @@ mod tests {
             .save_request(SaveRequestInput {
                 request_id: None,
                 collection_id: collection.id.clone(),
+                folder_id: None,
                 draft: succeeding_draft,
             })
             .await
@@ -839,6 +845,7 @@ mod tests {
                 .save_request(SaveRequestInput {
                     request_id: None,
                     collection_id: collection.id.clone(),
+                    folder_id: None,
                     draft: blank_draft_for(format!("{}{}", mock_server.uri(), path)),
                 })
                 .await
@@ -924,6 +931,7 @@ mod tests {
                 .save_request(SaveRequestInput {
                     request_id: None,
                     collection_id: collection.id.clone(),
+                    folder_id: None,
                     draft,
                 })
                 .await
@@ -1200,6 +1208,7 @@ mod tests {
                 midway_core::domain::workspace::SavedRequestRecord {
                     id: format!("property-18-req-{index}"),
                     collection_id: collection_id.to_string(),
+                    folder_id: None,
                     name: draft.name.clone(),
                     draft,
                     created_at: format!("{:010}", total - index),
@@ -1217,6 +1226,7 @@ mod tests {
                     created_at: "0000000000".to_string(),
                     updated_at: "0000000000".to_string(),
                 },
+                folders: Vec::new(),
                 requests,
             }],
             environments: vec![],

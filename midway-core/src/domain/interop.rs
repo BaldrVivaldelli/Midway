@@ -10,7 +10,7 @@ use crate::{
             ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, KeyValueRow,
             RequestBodyDraft, RequestDraft,
         },
-        workspace::{CollectionWithRequests, WorkspaceSnapshot},
+        workspace::{CollectionWithRequests, Folder, SavedRequestRecord, WorkspaceSnapshot},
     },
 };
 
@@ -99,11 +99,20 @@ pub struct NativeWorkspaceBundle {
     pub snapshot: WorkspaceSnapshot,
 }
 
+/// A request draft paired with its folder assignment from the import.
+#[derive(Debug, Clone)]
+pub struct ImportedRequest {
+    pub draft: RequestDraft,
+    /// The id of the folder this request belongs to (innermost folder), or None if top-level.
+    pub folder_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedPostmanCollection {
     pub collection_name: String,
     pub variables: Vec<KeyValueRow>,
-    pub requests: Vec<RequestDraft>,
+    pub folders: Vec<Folder>,
+    pub requests: Vec<ImportedRequest>,
     pub warnings: Vec<String>,
 }
 
@@ -228,56 +237,148 @@ pub fn is_postman_collection(value: &Value) -> bool {
     }
 }
 
-pub fn export_postman_collection(collection: &CollectionWithRequests) -> Value {
-    let items = collection
-        .requests
-        .iter()
-        .map(|record| {
-            let raw_url = build_raw_url(&record.draft.url, &record.draft.query);
-            let header = record
-                .draft
-                .headers
-                .iter()
-                .filter(|row| !row.key.trim().is_empty())
-                .map(|row| {
-                    json!({
-                        "key": row.key,
-                        "value": row.value,
-                        "disabled": !row.enabled
-                    })
-                })
-                .collect::<Vec<_>>();
+pub fn export_postman_collection(collection: &CollectionWithRequests) -> AppResult<Value> {
+    // Build the nested item array preserving folder hierarchy (Req 10.6).
+    let items = build_postman_items_tree(collection)?;
 
-            let mut request = json!({
-                "method": http_method_text(&record.draft.method),
-                "header": header,
-                "url": {
-                    "raw": raw_url,
-                    "query": export_postman_query(&record.draft.query)
-                },
-                "auth": export_postman_auth(&record.draft.auth)
-            });
-
-            if let Some(body) = export_postman_body(&record.draft.body) {
-                if let Some(map) = request.as_object_mut() {
-                    map.insert("body".to_string(), body);
-                }
-            }
-
-            json!({
-                "name": record.name,
-                "request": request
-            })
-        })
-        .collect::<Vec<_>>();
-
-    json!({
+    Ok(json!({
         "info": {
             "name": collection.collection.name,
             "_postman_id": collection.collection.id,
             "schema": POSTMAN_COLLECTION_SCHEMA_DRAFT_04
         },
         "item": items
+    }))
+}
+
+/// Builds the nested Postman `item` array from the collection's folders and requests.
+/// Folders become items with a nested `item` array; requests become items with `request`.
+/// Empty folders get `"item": []`. Fails the entire export if any element cannot be represented.
+fn build_postman_items_tree(collection: &CollectionWithRequests) -> AppResult<Vec<Value>> {
+    // Validate: every request with a folder_id must reference a folder that exists in the collection
+    let folder_ids: std::collections::HashSet<&str> = collection
+        .folders
+        .iter()
+        .map(|f| f.id.as_str())
+        .collect();
+
+    for record in &collection.requests {
+        if let Some(ref fid) = record.folder_id {
+            if !folder_ids.contains(fid.as_str()) {
+                return Err(AppError::Validation(format!(
+                    "Request '{}' references folder_id '{}' which does not exist in the collection. Export aborted.",
+                    record.name, fid
+                )));
+            }
+        }
+    }
+
+    // Validate: every folder with a parent_folder_id must reference an existing folder
+    for folder in &collection.folders {
+        if let Some(ref parent_id) = folder.parent_folder_id {
+            if !folder_ids.contains(parent_id.as_str()) {
+                return Err(AppError::Validation(format!(
+                    "Folder '{}' references parent_folder_id '{}' which does not exist in the collection. Export aborted.",
+                    folder.name, parent_id
+                )));
+            }
+        }
+    }
+
+    // Group folders by parent_folder_id
+    let mut children_folders: std::collections::HashMap<Option<&str>, Vec<&Folder>> =
+        std::collections::HashMap::new();
+    for folder in &collection.folders {
+        children_folders
+            .entry(folder.parent_folder_id.as_deref())
+            .or_default()
+            .push(folder);
+    }
+
+    // Group requests by folder_id
+    let mut requests_by_folder: std::collections::HashMap<Option<&str>, Vec<&SavedRequestRecord>> =
+        std::collections::HashMap::new();
+    for record in &collection.requests {
+        requests_by_folder
+            .entry(record.folder_id.as_deref())
+            .or_default()
+            .push(record);
+    }
+
+    // Recursively build the items tree starting from the root (parent_folder_id = None)
+    build_postman_items_level(None, &children_folders, &requests_by_folder)
+}
+
+/// Recursively builds Postman items for a given level in the folder hierarchy.
+/// At each level: folders first (in their original order), then requests (in their original order).
+fn build_postman_items_level(
+    parent_id: Option<&str>,
+    children_folders: &std::collections::HashMap<Option<&str>, Vec<&Folder>>,
+    requests_by_folder: &std::collections::HashMap<Option<&str>, Vec<&SavedRequestRecord>>,
+) -> AppResult<Vec<Value>> {
+    let mut items = Vec::new();
+
+    // Add folder items first (preserving order as stored)
+    if let Some(folders) = children_folders.get(&parent_id) {
+        for folder in folders {
+            let nested_items = build_postman_items_level(
+                Some(&folder.id),
+                children_folders,
+                requests_by_folder,
+            )?;
+            items.push(json!({
+                "name": folder.name,
+                "item": nested_items
+            }));
+        }
+    }
+
+    // Add request items (preserving order as stored)
+    if let Some(requests) = requests_by_folder.get(&parent_id) {
+        for record in requests {
+            items.push(export_postman_request_item(record));
+        }
+    }
+
+    Ok(items)
+}
+
+/// Exports a single SavedRequestRecord as a Postman request item.
+fn export_postman_request_item(record: &SavedRequestRecord) -> Value {
+    let raw_url = build_raw_url(&record.draft.url, &record.draft.query);
+    let header = record
+        .draft
+        .headers
+        .iter()
+        .filter(|row| !row.key.trim().is_empty())
+        .map(|row| {
+            json!({
+                "key": row.key,
+                "value": row.value,
+                "disabled": !row.enabled
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut request = json!({
+        "method": http_method_text(&record.draft.method),
+        "header": header,
+        "url": {
+            "raw": raw_url,
+            "query": export_postman_query(&record.draft.query)
+        },
+        "auth": export_postman_auth(&record.draft.auth)
+    });
+
+    if let Some(body) = export_postman_body(&record.draft.body) {
+        if let Some(map) = request.as_object_mut() {
+            map.insert("body".to_string(), body);
+        }
+    }
+
+    json!({
+        "name": record.name,
+        "request": request
     })
 }
 
@@ -304,10 +405,11 @@ pub fn import_postman_collection(value: &Value) -> AppResult<ParsedPostmanCollec
         .unwrap_or_default();
 
     let mut warnings = Vec::new();
+    let mut folders = Vec::new();
     let mut requests = Vec::new();
 
     if let Some(items) = value.get("item").and_then(Value::as_array) {
-        collect_postman_items(items, &mut Vec::new(), &mut requests, &mut warnings)?;
+        collect_postman_items(items, None, &mut folders, &mut requests, &mut warnings)?;
     }
 
     if requests.is_empty() {
@@ -320,6 +422,7 @@ pub fn import_postman_collection(value: &Value) -> AppResult<ParsedPostmanCollec
     Ok(ParsedPostmanCollection {
         collection_name,
         variables,
+        folders,
         requests,
         warnings,
     })
@@ -327,12 +430,14 @@ pub fn import_postman_collection(value: &Value) -> AppResult<ParsedPostmanCollec
 
 fn collect_postman_items(
     items: &[Value],
-    path: &mut Vec<String>,
-    requests: &mut Vec<RequestDraft>,
+    parent_folder_id: Option<&str>,
+    folders: &mut Vec<Folder>,
+    requests: &mut Vec<ImportedRequest>,
     warnings: &mut Vec<String>,
 ) -> AppResult<()> {
     for item in items {
         if let Some(children) = item.get("item").and_then(Value::as_array) {
+            // This is a folder item
             let folder_name = item
                 .get("name")
                 .and_then(Value::as_str)
@@ -340,14 +445,27 @@ fn collect_postman_items(
                 .filter(|name| !name.is_empty())
                 .unwrap_or("Folder")
                 .to_string();
-            path.push(folder_name);
-            collect_postman_items(children, path, requests, warnings)?;
-            let _ = path.pop();
+
+            let folder_id = Uuid::new_v4().to_string();
+
+            folders.push(Folder {
+                id: folder_id.clone(),
+                collection_id: String::new(), // Resolved at persist time
+                parent_folder_id: parent_folder_id.map(String::from),
+                name: folder_name,
+            });
+
+            // Recurse into children with the new folder as parent
+            collect_postman_items(children, Some(&folder_id), folders, requests, warnings)?;
             continue;
         }
 
         if item.get("request").is_some() {
-            requests.push(parse_postman_request_item(item, path, warnings)?);
+            let draft = parse_postman_request_item(item, warnings)?;
+            requests.push(ImportedRequest {
+                draft,
+                folder_id: parent_folder_id.map(String::from),
+            });
         }
     }
 
@@ -356,7 +474,6 @@ fn collect_postman_items(
 
 fn parse_postman_request_item(
     item: &Value,
-    path: &[String],
     warnings: &mut Vec<String>,
 ) -> AppResult<RequestDraft> {
     let request = item
@@ -370,12 +487,6 @@ fn parse_postman_request_item(
         .filter(|name| !name.is_empty())
         .unwrap_or("Imported request")
         .to_string();
-
-    let full_name = if path.is_empty() {
-        item_name
-    } else {
-        format!("{} / {}", path.join(" / "), item_name)
-    };
 
     let method = request
         .get("method")
@@ -395,13 +506,13 @@ fn parse_postman_request_item(
     if request.get("event").is_some() || item.get("event").is_some() {
         warnings.push(format!(
             "{}: los scripts/tests de Postman no se convierten automáticamente a responseTests.",
-            full_name
+            item_name
         ));
     }
 
     Ok(RequestDraft {
         id: None,
-        name: full_name,
+        name: item_name,
         method,
         url,
         query,
@@ -1425,6 +1536,480 @@ fn value_to_string_scalar(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::workspace::{CollectionSummary, SavedRequestRecord};
+    use crate::domain::http::HttpMethod;
+
+    // ─── Task 5.3: Preservar import/export nativo v1 y OpenAPI v3 ────────────────
+
+    /// Verifies that a native v1 bundle WITHOUT a `folders` field in its
+    /// collections deserializes correctly (folders defaults to empty Vec).
+    /// Requirement 10.7: same WorkspaceSnapshot without spurious Folders.
+    #[test]
+    fn native_v1_bundle_without_folders_deserializes_correctly() {
+        // Simulate a v1 bundle that was exported before Folder existed
+        let bundle_json = json!({
+            "format": NATIVE_WORKSPACE_FORMAT_ID,
+            "version": 1,
+            "exportedAt": "2024-01-01T00:00:00Z",
+            "snapshot": {
+                "collections": [{
+                    "collection": {
+                        "id": "col-1",
+                        "name": "My Collection",
+                        "requestCount": 1,
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "updatedAt": "2024-01-01T00:00:00Z"
+                    },
+                    "requests": [{
+                        "id": "req-1",
+                        "collectionId": "col-1",
+                        "name": "Get Users",
+                        "draft": {
+                            "id": null,
+                            "name": "Get Users",
+                            "method": "GET",
+                            "url": "https://api.example.com/users",
+                            "query": [],
+                            "headers": [],
+                            "auth": { "type": "none" },
+                            "body": { "mode": "none", "value": "", "formData": [] },
+                            "timeoutMs": 30000,
+                            "environmentId": null,
+                            "responseTests": []
+                        },
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "updatedAt": "2024-01-01T00:00:00Z"
+                    }]
+                }],
+                "environments": [],
+                "history": [],
+                "secrets": []
+            }
+        });
+
+        let bundle = parse_native_bundle(bundle_json).unwrap();
+        assert_eq!(bundle.snapshot.collections.len(), 1);
+        let col = &bundle.snapshot.collections[0];
+        // folders defaults to empty — no spurious Folder entities
+        assert!(col.folders.is_empty(), "v1 bundle without folders field should deserialize with empty folders Vec");
+        // request name is preserved without alteration
+        assert_eq!(col.requests[0].name, "Get Users");
+        assert_eq!(col.collection.name, "My Collection");
+    }
+
+    /// Verifies that a native v1 bundle WITH an explicit empty `folders` field
+    /// deserializes identically (no spurious Folder entities).
+    /// Requirement 10.7.
+    #[test]
+    fn native_v1_bundle_with_empty_folders_deserializes_correctly() {
+        let bundle_json = json!({
+            "format": NATIVE_WORKSPACE_FORMAT_ID,
+            "version": 1,
+            "exportedAt": "2024-01-01T00:00:00Z",
+            "snapshot": {
+                "collections": [{
+                    "collection": {
+                        "id": "col-1",
+                        "name": "Test Collection",
+                        "requestCount": 0,
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "updatedAt": "2024-01-01T00:00:00Z"
+                    },
+                    "folders": [],
+                    "requests": []
+                }],
+                "environments": [],
+                "history": [],
+                "secrets": []
+            }
+        });
+
+        let bundle = parse_native_bundle(bundle_json).unwrap();
+        assert_eq!(bundle.snapshot.collections.len(), 1);
+        assert!(bundle.snapshot.collections[0].folders.is_empty());
+    }
+
+    /// Verifies that native export (make_native_bundle) produces a bundle
+    /// that round-trips correctly and doesn't create spurious Folder entities.
+    /// Requirement 10.7.
+    #[test]
+    fn native_v1_roundtrip_no_spurious_folders() {
+        let snapshot = WorkspaceSnapshot {
+            collections: vec![CollectionWithRequests {
+                collection: CollectionSummary {
+                    id: "col-1".to_string(),
+                    name: "Original Collection".to_string(),
+                    request_count: 1,
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                folders: Vec::new(),
+                requests: vec![SavedRequestRecord {
+                    id: "req-1".to_string(),
+                    collection_id: "col-1".to_string(),
+                    folder_id: None,
+                    name: "My Request".to_string(),
+                    draft: RequestDraft {
+                        id: None,
+                        name: "My Request".to_string(),
+                        method: HttpMethod::GET,
+                        url: "https://example.com".to_string(),
+                        query: Vec::new(),
+                        headers: Vec::new(),
+                        auth: AuthConfig::None,
+                        body: RequestBodyDraft {
+                            mode: BodyMode::None,
+                            value: String::new(),
+                            form_data: Vec::new(),
+                        },
+                        timeout_ms: 30000,
+                        environment_id: None,
+                        response_tests: Vec::new(),
+                    },
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                }],
+            }],
+            environments: Vec::new(),
+            history: Vec::new(),
+            secrets: Vec::new(),
+        };
+
+        let bundle = make_native_bundle(snapshot.clone(), true, true);
+        let serialized = serde_json::to_value(&bundle).unwrap();
+        let reimported = parse_native_bundle(serialized).unwrap();
+
+        assert_eq!(reimported.snapshot.collections.len(), 1);
+        let col = &reimported.snapshot.collections[0];
+        assert!(col.folders.is_empty(), "round-tripped bundle should have no spurious folders");
+        assert_eq!(col.requests.len(), 1);
+        assert_eq!(col.requests[0].name, "My Request");
+        assert_eq!(col.collection.name, "Original Collection");
+    }
+
+    /// Verifies that OpenAPI v3 import does not produce any Folder entities.
+    /// Requirement 10.7.
+    #[test]
+    fn openapi_import_produces_no_folders() {
+        let openapi_doc = json!({
+            "openapi": "3.0.3",
+            "info": { "title": "Test API" },
+            "servers": [{ "url": "https://api.test.com" }],
+            "paths": {
+                "/users": {
+                    "get": {
+                        "operationId": "listUsers"
+                    },
+                    "post": {
+                        "operationId": "createUser",
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": { "type": "object" }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/users/{id}": {
+                    "get": {
+                        "operationId": "getUser",
+                        "parameters": [
+                            { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+                        ]
+                    }
+                }
+            }
+        });
+
+        let parsed = import_openapi_document(&openapi_doc).unwrap();
+        // ParsedOpenApiCollection has no folders field — it only produces requests
+        // Verify the structure doesn't inadvertently produce folder-like data
+        assert!(!parsed.requests.is_empty(), "should import at least one request");
+        assert_eq!(parsed.collection_name, "Test API");
+        // None of the requests should have folder path prefixes
+        for request in &parsed.requests {
+            assert!(
+                !request.name.contains(" / "),
+                "OpenAPI import should not produce path-prefixed names: {}",
+                request.name
+            );
+        }
+    }
+
+    /// Verifies that Postman export with no folders produces a flat item array
+    /// (no spurious nested items that would indicate phantom folders).
+    /// Requirement 10.7.
+    #[test]
+    fn postman_export_without_folders_produces_flat_items() {
+        let collection = CollectionWithRequests {
+            collection: CollectionSummary {
+                id: "col-1".to_string(),
+                name: "Flat Collection".to_string(),
+                request_count: 2,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders: Vec::new(),
+            requests: vec![
+                SavedRequestRecord {
+                    id: "req-1".to_string(),
+                    collection_id: "col-1".to_string(),
+                    folder_id: None,
+                    name: "Get Users".to_string(),
+                    draft: RequestDraft {
+                        id: None,
+                        name: "Get Users".to_string(),
+                        method: HttpMethod::GET,
+                        url: "https://api.example.com/users".to_string(),
+                        query: Vec::new(),
+                        headers: Vec::new(),
+                        auth: AuthConfig::None,
+                        body: RequestBodyDraft {
+                            mode: BodyMode::None,
+                            value: String::new(),
+                            form_data: Vec::new(),
+                        },
+                        timeout_ms: 30000,
+                        environment_id: None,
+                        response_tests: Vec::new(),
+                    },
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+            ],
+        };
+
+        let exported = export_postman_collection(&collection).unwrap();
+        let items = exported.get("item").and_then(Value::as_array).unwrap();
+        assert_eq!(items.len(), 1);
+        // Each item should be a request item (has "request"), not a folder item (has "item")
+        for item in items {
+            assert!(item.get("request").is_some(), "flat export should produce request items, not folder items");
+            assert!(item.get("item").is_none(), "flat export should not have nested item arrays");
+        }
+    }
+
+    // ─── Task 5.2: Export Postman v2.1 con `item` anidado ────────────────────────
+
+    #[test]
+    fn postman_export_nested_folders_preserves_hierarchy() {
+        // Hierarchy: Root folder "Auth" contains subfolder "OAuth" which contains a request.
+        // Also a top-level request outside any folder.
+        let collection = CollectionWithRequests {
+            collection: CollectionSummary {
+                id: "col-1".to_string(),
+                name: "Nested Collection".to_string(),
+                request_count: 2,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders: vec![
+                Folder {
+                    id: "folder-auth".to_string(),
+                    collection_id: "col-1".to_string(),
+                    parent_folder_id: None,
+                    name: "Auth".to_string(),
+                },
+                Folder {
+                    id: "folder-oauth".to_string(),
+                    collection_id: "col-1".to_string(),
+                    parent_folder_id: Some("folder-auth".to_string()),
+                    name: "OAuth".to_string(),
+                },
+            ],
+            requests: vec![
+                SavedRequestRecord {
+                    id: "req-1".to_string(),
+                    collection_id: "col-1".to_string(),
+                    folder_id: Some("folder-oauth".to_string()),
+                    name: "Get Token".to_string(),
+                    draft: RequestDraft {
+                        id: None,
+                        name: "Get Token".to_string(),
+                        method: HttpMethod::POST,
+                        url: "https://api.example.com/oauth/token".to_string(),
+                        query: Vec::new(),
+                        headers: Vec::new(),
+                        auth: AuthConfig::None,
+                        body: RequestBodyDraft {
+                            mode: BodyMode::None,
+                            value: String::new(),
+                            form_data: Vec::new(),
+                        },
+                        timeout_ms: 30000,
+                        environment_id: None,
+                        response_tests: Vec::new(),
+                    },
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                SavedRequestRecord {
+                    id: "req-2".to_string(),
+                    collection_id: "col-1".to_string(),
+                    folder_id: None,
+                    name: "Health Check".to_string(),
+                    draft: RequestDraft {
+                        id: None,
+                        name: "Health Check".to_string(),
+                        method: HttpMethod::GET,
+                        url: "https://api.example.com/health".to_string(),
+                        query: Vec::new(),
+                        headers: Vec::new(),
+                        auth: AuthConfig::None,
+                        body: RequestBodyDraft {
+                            mode: BodyMode::None,
+                            value: String::new(),
+                            form_data: Vec::new(),
+                        },
+                        timeout_ms: 30000,
+                        environment_id: None,
+                        response_tests: Vec::new(),
+                    },
+                    created_at: "2024-01-01T00:00:00Z".to_string(),
+                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+            ],
+        };
+
+        let exported = export_postman_collection(&collection).unwrap();
+
+        // Verify top-level structure
+        assert_eq!(
+            exported["info"]["name"].as_str().unwrap(),
+            "Nested Collection"
+        );
+        assert!(exported["info"]["schema"].as_str().unwrap().contains("schema.getpostman.com"));
+
+        let top_items = exported["item"].as_array().unwrap();
+        // Should have: folder "Auth" first, then top-level request "Health Check"
+        assert_eq!(top_items.len(), 2);
+
+        // First item is the "Auth" folder
+        let auth_folder = &top_items[0];
+        assert_eq!(auth_folder["name"].as_str().unwrap(), "Auth");
+        assert!(auth_folder.get("item").is_some(), "folder should have nested item array");
+        assert!(auth_folder.get("request").is_none(), "folder should not have a request field");
+
+        // Inside "Auth" there should be the "OAuth" subfolder
+        let auth_children = auth_folder["item"].as_array().unwrap();
+        assert_eq!(auth_children.len(), 1);
+        let oauth_folder = &auth_children[0];
+        assert_eq!(oauth_folder["name"].as_str().unwrap(), "OAuth");
+        assert!(oauth_folder.get("item").is_some());
+
+        // Inside "OAuth" should be the "Get Token" request
+        let oauth_children = oauth_folder["item"].as_array().unwrap();
+        assert_eq!(oauth_children.len(), 1);
+        let get_token = &oauth_children[0];
+        assert_eq!(get_token["name"].as_str().unwrap(), "Get Token");
+        assert!(get_token.get("request").is_some());
+        assert_eq!(get_token["request"]["method"].as_str().unwrap(), "POST");
+
+        // Second top-level item is the "Health Check" request
+        let health_check = &top_items[1];
+        assert_eq!(health_check["name"].as_str().unwrap(), "Health Check");
+        assert!(health_check.get("request").is_some());
+        assert!(health_check.get("item").is_none());
+    }
+
+    #[test]
+    fn postman_export_empty_folder_produces_empty_item_array() {
+        let collection = CollectionWithRequests {
+            collection: CollectionSummary {
+                id: "col-1".to_string(),
+                name: "With Empty Folder".to_string(),
+                request_count: 0,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders: vec![Folder {
+                id: "folder-empty".to_string(),
+                collection_id: "col-1".to_string(),
+                parent_folder_id: None,
+                name: "Empty Folder".to_string(),
+            }],
+            requests: Vec::new(),
+        };
+
+        let exported = export_postman_collection(&collection).unwrap();
+        let top_items = exported["item"].as_array().unwrap();
+        assert_eq!(top_items.len(), 1);
+
+        let empty_folder = &top_items[0];
+        assert_eq!(empty_folder["name"].as_str().unwrap(), "Empty Folder");
+        let nested = empty_folder["item"].as_array().unwrap();
+        assert!(nested.is_empty(), "empty folder should have item: []");
+    }
+
+    #[test]
+    fn postman_export_fails_if_request_references_nonexistent_folder() {
+        let collection = CollectionWithRequests {
+            collection: CollectionSummary {
+                id: "col-1".to_string(),
+                name: "Bad Collection".to_string(),
+                request_count: 1,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders: Vec::new(),
+            requests: vec![SavedRequestRecord {
+                id: "req-1".to_string(),
+                collection_id: "col-1".to_string(),
+                folder_id: Some("nonexistent-folder".to_string()),
+                name: "Orphan Request".to_string(),
+                draft: RequestDraft {
+                    id: None,
+                    name: "Orphan Request".to_string(),
+                    method: HttpMethod::GET,
+                    url: "https://example.com".to_string(),
+                    query: Vec::new(),
+                    headers: Vec::new(),
+                    auth: AuthConfig::None,
+                    body: RequestBodyDraft {
+                        mode: BodyMode::None,
+                        value: String::new(),
+                        form_data: Vec::new(),
+                    },
+                    timeout_ms: 30000,
+                    environment_id: None,
+                    response_tests: Vec::new(),
+                },
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }],
+        };
+
+        let result = export_postman_collection(&collection);
+        assert!(result.is_err(), "should fail export when request references nonexistent folder");
+    }
+
+    #[test]
+    fn postman_export_fails_if_folder_references_nonexistent_parent() {
+        let collection = CollectionWithRequests {
+            collection: CollectionSummary {
+                id: "col-1".to_string(),
+                name: "Bad Folders".to_string(),
+                request_count: 0,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            folders: vec![Folder {
+                id: "folder-1".to_string(),
+                collection_id: "col-1".to_string(),
+                parent_folder_id: Some("ghost-parent".to_string()),
+                name: "Orphan Folder".to_string(),
+            }],
+            requests: Vec::new(),
+        };
+
+        let result = export_postman_collection(&collection);
+        assert!(result.is_err(), "should fail export when folder references nonexistent parent");
+    }
+
+    // ─── End Task 5.2 ────────────────────────────────────────────────────────────
+
+    // ─── End Task 5.3 ────────────────────────────────────────────────────────────
 
     #[test]
     fn detects_openapi_documents() {

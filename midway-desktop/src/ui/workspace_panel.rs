@@ -20,6 +20,7 @@ use midway_core::domain::workspace::{EnvironmentRecord, HistoryEntry};
 
 use crate::app::{ExportFormState, ImportFormState, Message, Midway, UpdaterStatus, WorkspaceMessage, WorkspacePanelSection};
 use crate::diagnostics::CrashRecord;
+use crate::ui::design_system::{DesignSystem, ThemeMode};
 use crate::ui::tab_bar;
 
 /// Envoltura de `domain::interop::WorkspaceExportFormat` para el
@@ -76,6 +77,7 @@ const IMPORT_FORMAT_OPTIONS: [ImportFormatOption; 4] = [
 /// se muestra un botón para expandirlo. Cuando está expandido, se muestra
 /// un botón para colapsarlo junto con las tabs de sección (Environments/
 /// Data/History/Diagnostics/App updates).
+#[allow(dead_code)]
 pub fn view(state: &Midway) -> Element<'_, Message> {
     if state.workspace_panel.collapsed {
         return button(text("▶"))
@@ -89,6 +91,18 @@ pub fn view(state: &Midway) -> Element<'_, Message> {
     ]
     .spacing(8)
     .into()
+}
+
+/// Devuelve el contenido de la sección activa del `Workspace_Panel` sin
+/// incluir la franja de tabs usada para navegar entre secciones.
+pub fn section_content<'a>(state: &'a Midway, _ds: &DesignSystem) -> Element<'a, Message> {
+    match state.workspace_panel.active_section {
+        WorkspacePanelSection::Environments => environments_section(state),
+        WorkspacePanelSection::Data => data_section(state),
+        WorkspacePanelSection::History => history_section(state),
+        WorkspacePanelSection::Diagnostics => diagnostics_section(state),
+        WorkspacePanelSection::AppUpdates => app_updates_section(state),
+    }
 }
 
 /// Tabs de sección del `Workspace_Panel` (Requisito 4.1), usando el widget
@@ -118,9 +132,13 @@ fn section_tabs(state: &Midway) -> Element<'_, Message> {
         ),
     ];
 
-    tab_bar::tabs(entries, &active, |section| {
-        Message::Workspace(WorkspaceMessage::SectionSelected(section))
-    })
+    let ds = DesignSystem::for_mode(ThemeMode::default());
+    tab_bar::tabs(
+        entries,
+        &active,
+        |section| Message::Workspace(WorkspaceMessage::SectionSelected(section)),
+        &ds,
+    )
 }
 
 /// Sección Environments del `Workspace_Panel` (Tarea 7.2, Requisitos 4.2,

@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use midway_core::app::errors::{AppError, AppResult};
 
-use crate::app::TabSnapshot;
+use crate::{app::TabSnapshot, ui::design_system::ThemeMode};
 
 /// Nombre de la aplicación usado para resolver el subdirectorio de datos.
 ///
@@ -76,6 +76,15 @@ pub const CLOSED_TABS_LIMIT: usize = 20;
 pub struct PanelSizes {
     pub workspace_panel_width: f32,
     pub response_panel_height: f32,
+    /// Ancho del editor de request cuando editor y respuesta están lado a lado.
+    /// `serde(default)` mantiene compatibles las sesiones creadas antes de
+    /// que este divisor fuese redimensionable.
+    #[serde(default = "default_request_panel_width")]
+    pub request_panel_width: f32,
+}
+
+fn default_request_panel_width() -> f32 {
+    360.0
 }
 
 impl Default for PanelSizes {
@@ -86,6 +95,7 @@ impl Default for PanelSizes {
         Self {
             workspace_panel_width: 280.0,
             response_panel_height: 320.0,
+            request_panel_width: default_request_panel_width(),
         }
     }
 }
@@ -107,8 +117,18 @@ pub struct SessionSnapshot {
     pub open_tabs: Vec<TabSnapshot>,
     pub closed_tabs: Vec<TabSnapshot>,
     pub panel_sizes: PanelSizes,
+    /// Tema seleccionado por el usuario. `default` mantiene compatibles
+    /// las sesiones guardadas antes de que este campo existiera, que se
+    /// restauran con el tema claro en vez de descartarse como corruptas.
+    #[serde(default)]
+    pub theme_mode: ThemeMode,
     /// RFC3339.
     pub saved_at: String,
+    /// ID de la colección activa al momento del autosave. `default`
+    /// garantiza retrocompatibilidad con snapshots anteriores que no
+    /// incluyen este campo (se deserializan como `None`).
+    #[serde(default)]
+    pub active_collection_id: Option<String>,
 }
 
 /// Resuelve la ruta del archivo `session.json` dentro del data dir de la
@@ -329,9 +349,24 @@ mod tests {
             panel_sizes: PanelSizes {
                 workspace_panel_width: 280.0,
                 response_panel_height: 320.0,
+                request_panel_width: 360.0,
             },
+            theme_mode: ThemeMode::default(),
             saved_at: "2024-01-01T00:00:00Z".to_string(),
+            active_collection_id: Some("collection-1".to_string()),
         }
+    }
+
+    #[test]
+    fn panel_sizes_from_older_session_default_request_panel_width() {
+        let panel_sizes: PanelSizes = serde_json::from_str(
+            r#"{"workspacePanelWidth":280.0,"responsePanelHeight":320.0}"#,
+        )
+        .expect("el formato anterior debe seguir siendo compatible");
+
+        assert_eq!(panel_sizes.workspace_panel_width, 280.0);
+        assert_eq!(panel_sizes.response_panel_height, 320.0);
+        assert_eq!(panel_sizes.request_panel_width, 360.0);
     }
 
     /// Round-trip: escribir un `SessionSnapshot` de forma atómica y volver a
@@ -585,7 +620,9 @@ mod tests {
                         open_tabs: Vec::new(),
                         closed_tabs: Vec::new(),
                         panel_sizes: PanelSizes::default(),
+                        theme_mode: ThemeMode::default(),
                         saved_at,
+                        active_collection_id: None,
                     };
 
                     serde_json::to_string(&snapshot)
@@ -820,10 +857,16 @@ mod tests {
         /// romperían la comparación de igualdad estructural, ya que
         /// `NaN != NaN`).
         fn arb_panel_sizes() -> impl Strategy<Value = PanelSizes> {
-            (50.0f32..2000.0f32, 50.0f32..2000.0f32).prop_map(
-                |(workspace_panel_width, response_panel_height)| PanelSizes {
+            (
+                50.0f32..2000.0f32,
+                50.0f32..2000.0f32,
+                50.0f32..2000.0f32,
+            )
+            .prop_map(
+                |(workspace_panel_width, response_panel_height, request_panel_width)| PanelSizes {
                     workspace_panel_width,
                     response_panel_height,
+                    request_panel_width,
                 },
             )
         }
@@ -849,15 +892,18 @@ mod tests {
                 arb_tab_snapshots("closed"),
                 arb_panel_sizes(),
                 arb_saved_at(),
+                proptest::option::of(arb_token()),
             )
                 .prop_map(
-                    |(active_tab_id, open_tabs, closed_tabs, panel_sizes, saved_at)| SessionSnapshot {
+                    |(active_tab_id, open_tabs, closed_tabs, panel_sizes, saved_at, active_collection_id)| SessionSnapshot {
                         version: SESSION_SCHEMA_VERSION,
                         active_tab_id,
                         open_tabs,
                         closed_tabs,
                         panel_sizes,
+                        theme_mode: ThemeMode::default(),
                         saved_at,
+                        active_collection_id,
                     },
                 )
         }
@@ -895,6 +941,113 @@ mod tests {
                     .expect("la lectura no debería fallar tras una escritura exitosa");
 
                 prop_assert_eq!(read_back, snapshot);
+            }
+        }
+    }
+
+    // Feature: ux-flow-redesign, Property 10: Session snapshot round-trip for active_collection_id
+    /// Property test para el round-trip de `active_collection_id` en
+    /// `SessionSnapshot` (Property 10, Requirements 9.1, 9.4):
+    ///
+    /// 1. Para cualquier `Option<String>` arbitrario usado como
+    ///    `active_collection_id`, serializar un `SessionSnapshot` a JSON
+    ///    y deserializarlo de vuelta SHALL preservar el valor exactamente.
+    /// 2. Deserializar un JSON que NO contiene el campo
+    ///    `active_collection_id` SHALL producir `None`
+    ///    (retrocompatibilidad vía `#[serde(default)]`).
+    ///
+    /// **Validates: Requirements 9.1, 9.4**
+    mod active_collection_id_round_trip_property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Genera un `Option<String>` arbitrario para `active_collection_id`:
+        /// `None` o un string no vacío con caracteres alfanuméricos y guiones.
+        fn arb_active_collection_id() -> impl Strategy<Value = Option<String>> {
+            proptest::option::of("[a-zA-Z0-9_-]{1,30}".prop_map(|s| s.to_string()))
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 100, ..ProptestConfig::default() })]
+
+            /// Feature: ux-flow-redesign, Property 10: Session snapshot
+            /// round-trip for active_collection_id.
+            /// Validates: Requirements 9.1, 9.4
+            ///
+            /// Para cualquier `Option<String>` arbitrario usado como
+            /// `active_collection_id`, serializar a JSON y deserializar
+            /// de vuelta SHALL preservar el valor exactamente.
+            #[test]
+            fn property_10_active_collection_id_round_trip(
+                active_collection_id in arb_active_collection_id(),
+            ) {
+                let snapshot = SessionSnapshot {
+                    version: SESSION_SCHEMA_VERSION,
+                    active_tab_id: None,
+                    open_tabs: Vec::new(),
+                    closed_tabs: Vec::new(),
+                    panel_sizes: PanelSizes::default(),
+                    theme_mode: ThemeMode::default(),
+                    saved_at: "2024-01-01T00:00:00Z".to_string(),
+                    active_collection_id: active_collection_id.clone(),
+                };
+
+                let json = serde_json::to_string(&snapshot)
+                    .expect("serialización no debería fallar");
+                let deserialized: SessionSnapshot = serde_json::from_str(&json)
+                    .expect("deserialización no debería fallar");
+
+                prop_assert_eq!(
+                    deserialized.active_collection_id,
+                    active_collection_id,
+                    "active_collection_id debe preservarse exactamente tras round-trip"
+                );
+            }
+
+            /// Feature: ux-flow-redesign, Property 10: Session snapshot
+            /// round-trip for active_collection_id (retrocompatibility).
+            /// Validates: Requirements 9.1, 9.4
+            ///
+            /// Para cualquier `SessionSnapshot` serializado cuyo JSON se
+            /// modifique eliminando el campo `activeCollectionId`,
+            /// deserializar SHALL producir `active_collection_id == None`
+            /// gracias a `#[serde(default)]`.
+            #[test]
+            fn property_10_missing_active_collection_id_deserializes_to_none(
+                active_collection_id in arb_active_collection_id(),
+            ) {
+                let snapshot = SessionSnapshot {
+                    version: SESSION_SCHEMA_VERSION,
+                    active_tab_id: None,
+                    open_tabs: Vec::new(),
+                    closed_tabs: Vec::new(),
+                    panel_sizes: PanelSizes::default(),
+                    theme_mode: ThemeMode::default(),
+                    saved_at: "2024-01-01T00:00:00Z".to_string(),
+                    active_collection_id,
+                };
+
+                let json = serde_json::to_string(&snapshot)
+                    .expect("serialización no debería fallar");
+
+                // Remover el campo "activeCollectionId" del JSON para
+                // simular un snapshot antiguo que no lo incluye.
+                let mut json_value: serde_json::Value = serde_json::from_str(&json)
+                    .expect("JSON debería ser válido");
+                json_value.as_object_mut()
+                    .expect("root debería ser un objeto")
+                    .remove("activeCollectionId");
+
+                let modified_json = serde_json::to_string(&json_value)
+                    .expect("re-serialización no debería fallar");
+                let deserialized: SessionSnapshot = serde_json::from_str(&modified_json)
+                    .expect("deserialización sin activeCollectionId no debería fallar");
+
+                prop_assert_eq!(
+                    deserialized.active_collection_id,
+                    None,
+                    "active_collection_id debe ser None cuando el campo está ausente del JSON"
+                );
             }
         }
     }

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod cookies;
 pub mod http;
 pub mod interop;
 pub mod interpolation;
