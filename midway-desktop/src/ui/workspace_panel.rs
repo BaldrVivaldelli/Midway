@@ -109,26 +109,38 @@ pub fn section_content<'a>(state: &'a Midway, _ds: &DesignSystem) -> Element<'a,
 /// compartido `ui::tab_bar` (envoltura de `iced_aw::{TabBar, Tabs}`), igual
 /// que las tabs de configuración del `Request_Composer` y las del
 /// `Response_Inspector`.
-fn section_tabs(state: &Midway) -> Element<'_, Message> {
+fn section_tabs<'a>(state: &'a Midway) -> Element<'a, Message> {
     let active = state.workspace_panel.active_section;
 
-    let entries = vec![
+    let entries: Vec<(
+        WorkspacePanelSection,
+        &'static str,
+        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
+    )> = vec![
         (
             WorkspacePanelSection::Environments,
             "Environments",
-            environments_section(state),
+            Box::new(move || environments_section(state)),
         ),
-        (WorkspacePanelSection::Data, "Data", data_section(state)),
-        (WorkspacePanelSection::History, "History", history_section(state)),
+        (
+            WorkspacePanelSection::Data,
+            "Data",
+            Box::new(move || data_section(state)),
+        ),
+        (
+            WorkspacePanelSection::History,
+            "History",
+            Box::new(move || history_section(state)),
+        ),
         (
             WorkspacePanelSection::Diagnostics,
             "Diagnostics",
-            diagnostics_section(state),
+            Box::new(move || diagnostics_section(state)),
         ),
         (
             WorkspacePanelSection::AppUpdates,
             "App updates",
-            app_updates_section(state),
+            Box::new(move || app_updates_section(state)),
         ),
     ];
 

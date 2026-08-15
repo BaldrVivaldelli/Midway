@@ -177,6 +177,18 @@ pub struct RequestPreview {
     pub missing_secret_aliases: Vec<String>,
 }
 
+/// Límite por defecto de body de respuesta que se retiene en memoria.
+///
+/// Las respuestas se leen en streaming y se cortan al alcanzar este tamaño
+/// (ver `infra::http_reqwest::execute_request`). Sin este límite, un endpoint
+/// que devuelve cientos de MB obliga a materializar el payload completo en
+/// RAM (y a shapear todo ese texto en el `Response_Inspector`), lo que era la
+/// causa principal del consumo de memoria de la app.
+///
+/// 8 MiB cubre con holgura payloads de API reales y mantiene acotado el peor
+/// caso por tab.
+pub const DEFAULT_MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseEnvelope {
@@ -185,7 +197,24 @@ pub struct ResponseEnvelope {
     pub headers: Vec<ResolvedPair>,
     pub body_text: String,
     pub duration_ms: u64,
+    /// Tamaño del body retenido en `body_text`. Cuando `truncated` es `true`,
+    /// este valor es el del fragmento retenido, no el del payload original
+    /// (que puede ser desconocido si el servidor no envía `Content-Length`).
     pub size_bytes: u64,
     pub final_url: String,
     pub received_at: String,
+    /// `true` cuando el body superó el límite y `body_text` es un prefijo del
+    /// payload real. La UI lo usa para avisar que la vista está recortada.
+    #[serde(default)]
+    pub truncated: bool,
+    /// `true` cuando la UI liberó el body de esta respuesta para no retener
+    /// payloads de tabs inactivas. La metadata sigue siendo válida; solo
+    /// `body_text` quedó vacío.
+    #[serde(default)]
+    pub body_evicted: bool,
+    /// Tamaño total informado por el servidor vía `Content-Length`, cuando
+    /// está disponible. Permite mostrar "8 MB de 240 MB" en una respuesta
+    /// truncada.
+    #[serde(default)]
+    pub total_size_bytes: Option<u64>,
 }

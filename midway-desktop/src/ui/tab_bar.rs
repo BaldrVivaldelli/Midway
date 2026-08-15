@@ -8,8 +8,13 @@ use iced::{font, Border, Element, Font, Length};
 use crate::ui::design_system::DesignSystem;
 
 /// Renders a flat tab bar + the active tab's content below it.
+///
+/// El contenido de cada tab se recibe como closure y solo se invoca el de la
+/// tab activa: construir los `Element` de las tabs ocultas para después
+/// descartarlos desperdicia trabajo (y en la tab Body del
+/// `Response_Inspector`, el shaping del payload completo).
 pub fn tabs<'a, Message, TabId, F>(
-    entries: Vec<(TabId, &'static str, Element<'a, Message>)>,
+    entries: Vec<(TabId, &'static str, Box<dyn FnOnce() -> Element<'a, Message> + 'a>)>,
     active: &TabId,
     on_select: F,
     ds: &DesignSystem,
@@ -60,11 +65,12 @@ where
         tabs_row = tabs_row.push(tab_btn);
     }
 
-    // Find active tab content
+    // Solo se construye el contenido de la tab activa; el resto de los
+    // closures se descarta sin ejecutarse.
     let active_content = entries
         .into_iter()
         .find(|(id, _, _)| id == active)
-        .map(|(_, _, content)| content);
+        .map(|(_, _, build)| build());
 
     let border_color = ds.palette.border;
     let separator = container(text(""))

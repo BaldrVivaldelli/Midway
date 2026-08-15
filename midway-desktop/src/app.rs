@@ -3576,10 +3576,11 @@ async fn execute_send(
 /// identificada por `tab_id` (Tarea 3.18): puede no ser la tab activa si el
 /// usuario cambió de tab mientras la request estaba en curso.
 fn handle_send_completed(state: &mut Midway, tab_id: String, result: Result<ResponseOutcome, String>) {
-    let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+    let Some(position) = state.tabs.iter().position(|tab| tab.id == tab_id) else {
         return;
     };
 
+    let tab = &mut state.tabs[position];
     tab.sending = false;
     tab.execution_id = None;
 
@@ -3587,10 +3588,48 @@ fn handle_send_completed(state: &mut Midway, tab_id: String, result: Result<Resp
         Ok(outcome) => {
             tab.response = Some(outcome);
             tab.send_error = None;
+            // Cada tab retenía su body completo indefinidamente, así que el
+            // consumo crecía de forma lineal con la cantidad de tabs con
+            // respuesta. Al llegar una respuesta nueva se liberan los bodies
+            // de las demás tabs, conservando status/tiempo/tamaño.
+            evict_inactive_response_bodies(&mut state.tabs, position);
         }
         Err(message) => {
             tab.send_error = Some(message);
         }
+    }
+}
+
+/// Libera el `body_text` de las respuestas de todas las tabs excepto la
+/// indicada por `keep_index`.
+///
+/// La metadata de la respuesta (status, tiempo, tamaño, headers, assertions)
+/// se conserva, así que la tab sigue mostrando su resumen; solo se descarta el
+/// payload, que es lo que ocupa memoria. Se marca con `body_evicted` para que
+/// el `Response_Inspector` avise que el body ya no está disponible.
+///
+/// Toma `&mut [RequestTabState]` en lugar de `&mut Midway` para poder
+/// ejercitarse en tests sin construir el estado completo de la aplicación.
+fn evict_inactive_response_bodies(tabs: &mut [RequestTabState], keep_index: usize) {
+    for (index, tab) in tabs.iter_mut().enumerate() {
+        if index == keep_index {
+            continue;
+        }
+
+        let Some(outcome) = tab.response.as_mut() else {
+            continue;
+        };
+
+        if outcome.response.body_text.is_empty() {
+            continue;
+        }
+
+        if outcome.response.total_size_bytes.is_none() {
+            outcome.response.total_size_bytes = Some(outcome.response.size_bytes);
+        }
+
+        outcome.response.body_text = String::new();
+        outcome.response.body_evicted = true;
     }
 }
 
@@ -6960,7 +6999,105 @@ mod tests {
             size_bytes: body_text.len() as u64,
             final_url: final_url.to_string(),
             received_at: "2024-01-01T00:00:00Z".to_string(),
+            truncated: false,
+            body_evicted: false,
+            total_size_bytes: None,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Eviction de bodies de respuestas de tabs inactivas.
+    //
+    // Cada tab retenía su `body_text` completo mientras siguiera abierta,
+    // así que el consumo de memoria crecía de forma lineal con la cantidad
+    // de tabs con respuesta. `evict_inactive_response_bodies` libera los
+    // payloads de las tabs que no son la que acaba de recibir respuesta,
+    // preservando la metadata para seguir mostrando el resumen.
+    // -----------------------------------------------------------------
+
+    /// Construye una tab con una respuesta ya cargada y un body del largo
+    /// indicado, para ejercitar la eviction sin pasar por la red.
+    fn tab_with_response_body(body: &str) -> RequestTabState {
+        let mut tab = RequestTabState::blank();
+        tab.response = Some(ResponseOutcome {
+            response: build_test_response(200, Vec::new(), body, "https://example.com"),
+            assertions: AssertionReport {
+                total: 0,
+                passed: 0,
+                failed: 0,
+                results: Vec::new(),
+            },
+        });
+        tab
+    }
+
+    /// La tab que acaba de recibir respuesta conserva su body; las demás lo
+    /// liberan y quedan marcadas con `body_evicted`.
+    #[test]
+    fn eviction_frees_other_tabs_bodies_and_keeps_the_active_one() {
+        let mut tabs = vec![
+            tab_with_response_body("body-de-la-tab-0"),
+            tab_with_response_body("body-de-la-tab-1"),
+            tab_with_response_body("body-de-la-tab-2"),
+        ];
+
+        evict_inactive_response_bodies(&mut tabs, 1);
+
+        let kept = tabs[1].response.as_ref().expect("la tab 1 tiene respuesta");
+        assert_eq!(kept.response.body_text, "body-de-la-tab-1");
+        assert!(!kept.response.body_evicted);
+
+        for index in [0usize, 2] {
+            let evicted = tabs[index]
+                .response
+                .as_ref()
+                .expect("la tab conserva la metadata de su respuesta");
+            assert!(
+                evicted.response.body_text.is_empty(),
+                "el body de la tab {index} debería liberarse"
+            );
+            assert!(evicted.response.body_evicted);
+        }
+    }
+
+    /// La eviction preserva la metadata de la respuesta (status, tiempo,
+    /// headers) y recuerda el tamaño original en `total_size_bytes`, para que
+    /// la UI pueda seguir mostrando el resumen y decir cuánto pesaba el body.
+    #[test]
+    fn eviction_preserves_response_metadata_and_original_size() {
+        let body = "x".repeat(4096);
+        let mut tabs = vec![tab_with_response_body(&body), tab_with_response_body("otro")];
+
+        evict_inactive_response_bodies(&mut tabs, 1);
+
+        let evicted = tabs[0].response.as_ref().expect("metadata preservada");
+        assert_eq!(evicted.response.status, 200);
+        assert_eq!(evicted.response.duration_ms, 10);
+        assert_eq!(evicted.response.final_url, "https://example.com");
+        assert_eq!(
+            evicted.response.total_size_bytes,
+            Some(4096),
+            "debe recordar cuánto pesaba el body liberado"
+        );
+    }
+
+    /// Las tabs sin respuesta no se ven afectadas.
+    #[test]
+    fn eviction_ignores_tabs_without_response() {
+        let mut tabs = vec![RequestTabState::blank(), tab_with_response_body("activo")];
+
+        evict_inactive_response_bodies(&mut tabs, 1);
+
+        assert!(tabs[0].response.is_none());
+        assert_eq!(
+            tabs[1]
+                .response
+                .as_ref()
+                .expect("la tab activa conserva su respuesta")
+                .response
+                .body_text,
+            "activo"
+        );
     }
 
     /// Despacha `AssertionAdded` (Tarea 5.8) sobre el `Midway` de prueba y

@@ -1,19 +1,31 @@
 use std::{error::Error as StdError, ffi::OsStr, path::Path, time::{Duration, Instant}};
 
 use chrono::Utc;
+use futures_util::StreamExt;
 use reqwest::{multipart::{Form, Part}, Method};
 
 use crate::{
     app::errors::{AppError, AppResult},
     domain::http::{
         HttpMethod, ResolvedBody, ResolvedFormDataField, ResolvedPair, ResolvedRequest,
-        ResponseEnvelope,
+        ResponseEnvelope, DEFAULT_MAX_BODY_BYTES,
     },
 };
 
 pub async fn execute_request(
     client: &reqwest::Client,
     request: ResolvedRequest,
+) -> AppResult<ResponseEnvelope> {
+    execute_request_with_body_limit(client, request, DEFAULT_MAX_BODY_BYTES).await
+}
+
+/// Igual que `execute_request`, pero permite fijar el límite de body retenido
+/// en memoria. Se usa desde los tests para ejercitar el corte sin necesidad de
+/// mover megabytes.
+pub async fn execute_request_with_body_limit(
+    client: &reqwest::Client,
+    request: ResolvedRequest,
+    max_body_bytes: u64,
 ) -> AppResult<ResponseEnvelope> {
     let start = Instant::now();
     let method = to_reqwest_method(&request.method);
@@ -60,21 +72,60 @@ pub async fn execute_request(
         })
         .collect::<Vec<_>>();
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| normalize_reqwest_error(&request, error))?;
-    let body_text = String::from_utf8_lossy(&bytes).to_string();
+    let total_size_bytes = response.content_length();
+
+    // Lectura en streaming con corte en `max_body_bytes`: evita materializar
+    // payloads arbitrariamente grandes en RAM. Al alcanzar el límite se deja
+    // de acumular y se descarta el resto del stream sin guardarlo.
+    let limit = max_body_bytes as usize;
+    let mut buffer: Vec<u8> = Vec::with_capacity(
+        total_size_bytes
+            .map(|len| (len as usize).min(limit))
+            .unwrap_or(0)
+            .min(64 * 1024),
+    );
+    let mut truncated = false;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| normalize_reqwest_error(&request, error))?;
+
+        if buffer.len() >= limit {
+            truncated = true;
+            break;
+        }
+
+        let remaining = limit - buffer.len();
+        if chunk.len() > remaining {
+            buffer.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+
+        buffer.extend_from_slice(&chunk);
+    }
+
+    // `from_utf8` evita la copia extra de `from_utf8_lossy` en el caso feliz
+    // (body UTF-8 válido, que es lo normal en APIs). Solo se paga la
+    // conversión con reemplazo cuando el payload no es UTF-8 válido, algo
+    // esperable además si el corte cayó en medio de un carácter multibyte.
+    let body_text = match String::from_utf8(buffer) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    };
 
     Ok(ResponseEnvelope {
         status: status.as_u16(),
         status_text,
         headers,
-        body_text,
         duration_ms: start.elapsed().as_millis() as u64,
-        size_bytes: bytes.len() as u64,
+        size_bytes: body_text.len() as u64,
         final_url,
         received_at: Utc::now().to_rfc3339(),
+        truncated,
+        body_evicted: false,
+        total_size_bytes,
+        body_text,
     })
 }
 

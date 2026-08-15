@@ -39,3 +39,5 @@ Thumbs.db
 # Kiro local machine config (MCP servers, hooks) - personal/local, not shared via repo
 .kiro/settings/
 .kiro/hooks/
+src-tauri/target
+*.nix

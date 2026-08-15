@@ -148,19 +148,32 @@ fn response_tabs<'a>(
     active: ResponseInspectorTab,
     ds: &DesignSystem,
 ) -> Element<'a, Message> {
-    let entries = vec![
-        (ResponseInspectorTab::Body, "Body", body_tab(outcome, ds)),
+    let ds_owned = *ds;
+    let entries: Vec<(
+        ResponseInspectorTab,
+        &'static str,
+        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
+    )> = vec![
+        (
+            ResponseInspectorTab::Body,
+            "Body",
+            Box::new(move || body_tab(outcome, &ds_owned)),
+        ),
         (
             ResponseInspectorTab::Headers,
             "Headers",
-            headers_tab(outcome),
+            Box::new(move || headers_tab(outcome)),
         ),
         (
             ResponseInspectorTab::Cookies,
             "Cookies",
-            cookies_tab(state, outcome, ds),
+            Box::new(move || cookies_tab(state, outcome, &ds_owned)),
         ),
-        (ResponseInspectorTab::Tests, "Tests", tests_tab(outcome)),
+        (
+            ResponseInspectorTab::Tests,
+            "Tests",
+            Box::new(move || tests_tab(outcome)),
+        ),
     ];
 
     tab_bar::tabs(
@@ -171,16 +184,118 @@ fn response_tabs<'a>(
     )
 }
 
-/// Tab Body: muestra `response.body_text` como texto plano. La
-/// resaltación de sintaxis JSON vía `Text_Editor_Component`
-/// (`ui::text_editor`) se integra en una tarea posterior.
+/// Cantidad máxima de bytes del body que se pasan al widget de texto.
+///
+/// `iced` shapea todo el contenido de un `text()` (no virtualiza por líneas
+/// visibles), así que el costo de glyphs es proporcional al largo total, no a
+/// lo que se ve en pantalla. Un body de varios MB en un único `text()` genera
+/// un pico de memoria y de layout enorme.
+///
+/// 128 KiB es bastante más de lo que un humano puede leer en el panel y
+/// mantiene el shaping acotado. El body completo (hasta el límite de
+/// retención de `midway-core`) sigue disponible en `ResponseEnvelope` para
+/// assertions, export y copiado.
+const MAX_RENDERED_BODY_BYTES: usize = 128 * 1024;
+
+/// Recorta `body` a `MAX_RENDERED_BODY_BYTES` respetando los límites de
+/// carácter UTF-8, para no romper un carácter multibyte al cortar.
+///
+/// Devuelve el fragmento a renderizar y si hubo recorte.
+fn clamp_rendered_body(body: &str) -> (&str, bool) {
+    if body.len() <= MAX_RENDERED_BODY_BYTES {
+        return (body, false);
+    }
+
+    let mut end = MAX_RENDERED_BODY_BYTES;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    (&body[..end], true)
+}
+
+/// Formatea una cantidad de bytes en una unidad legible.
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    let value = bytes as f64;
+
+    if value >= MIB {
+        format!("{:.1} MB", value / MIB)
+    } else if value >= KIB {
+        format!("{:.1} KB", value / KIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// Tab Body: muestra `response.body_text` como texto plano.
+///
+/// El texto se recorta a `MAX_RENDERED_BODY_BYTES` antes de pasarlo al
+/// widget, y cuando el body está recortado (acá o por el límite de retención
+/// de `midway-core`) se muestra un aviso arriba para que quede claro que la
+/// vista no es el payload completo.
 fn body_tab<'a>(outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, Message> {
     let monospace = ds.typography.monospace;
-    text(outcome.response.body_text.as_str())
+    let response = &outcome.response;
+    let (rendered, clamped_for_render) = clamp_rendered_body(response.body_text.as_str());
+
+    // El body fue liberado para no retener payloads de tabs inactivas: no hay
+    // texto que mostrar, solo el aviso.
+    if response.body_evicted {
+        let secondary = ds.typography.secondary;
+        let size = response.total_size_bytes.unwrap_or(response.size_bytes);
+        return text(format!(
+            "El body de {} se liberó para ahorrar memoria. Reenviá el request para verlo de nuevo.",
+            format_bytes(size)
+        ))
+        .size(secondary.size)
+        .font(font_for(&secondary))
+        .color(ds.palette.text_secondary)
+        .width(Length::Fill)
+        .into();
+    }
+
+    let body_text = text(rendered)
         .size(monospace.size)
         .font(font_for(&monospace))
-        .width(Length::Fill)
-        .into()
+        .width(Length::Fill);
+
+    if !clamped_for_render && !response.truncated {
+        return body_text.into();
+    }
+
+    let secondary = ds.typography.secondary;
+    let notice = if response.truncated {
+        match response.total_size_bytes {
+            Some(total) => format!(
+                "Mostrando {} de {}. La respuesta superó el límite de lectura y se truncó.",
+                format_bytes(rendered.len() as u64),
+                format_bytes(total)
+            ),
+            None => format!(
+                "Mostrando {}. La respuesta superó el límite de lectura y se truncó.",
+                format_bytes(rendered.len() as u64)
+            ),
+        }
+    } else {
+        format!(
+            "Mostrando {} de {}. Body recortado para esta vista.",
+            format_bytes(rendered.len() as u64),
+            format_bytes(response.size_bytes)
+        )
+    };
+
+    column![
+        text(notice)
+            .size(secondary.size)
+            .font(font_for(&secondary))
+            .color(ds.palette.text_secondary),
+        body_text,
+    ]
+    .spacing(ds.spacing.xs)
+    .width(Length::Fill)
+    .into()
 }
 
 /// Tab Cookies: muestra las cookies del `CookieJarHandle` para la
@@ -320,6 +435,9 @@ mod tests {
             size_bytes: 128,
             final_url: "https://example.com".to_string(),
             received_at: "2024-01-01T00:00:00Z".to_string(),
+            truncated: false,
+            body_evicted: false,
+            total_size_bytes: None,
         }
     }
 
@@ -337,6 +455,9 @@ mod tests {
             size_bytes: 9001,
             final_url: "https://example.com/missing".to_string(),
             received_at: "2024-02-02T10:00:00Z".to_string(),
+            truncated: false,
+            body_evicted: false,
+            total_size_bytes: None,
         };
         let outcome = make_outcome(response, Vec::new());
 
@@ -447,5 +568,61 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Recorte del body para renderizado.
+    //
+    // `iced` shapea todo el texto de un `text()`, sin virtualizar por
+    // líneas visibles, así que pasarle un payload de varios MB genera un
+    // pico de memoria y de layout. `clamp_rendered_body` acota lo que llega
+    // al widget sin tocar el `body_text` retenido en el envelope.
+    // -----------------------------------------------------------------
+
+    /// Un body por debajo del límite se renderiza completo y sin marcar.
+    #[test]
+    fn clamp_leaves_small_bodies_untouched() {
+        let body = "{\"ok\":true}";
+
+        let (rendered, clamped) = clamp_rendered_body(body);
+
+        assert_eq!(rendered, body);
+        assert!(!clamped);
+    }
+
+    /// Un body por encima del límite se recorta al máximo renderizable.
+    #[test]
+    fn clamp_truncates_large_bodies_to_the_cap() {
+        let body = "x".repeat(MAX_RENDERED_BODY_BYTES * 3);
+
+        let (rendered, clamped) = clamp_rendered_body(&body);
+
+        assert!(clamped);
+        assert_eq!(rendered.len(), MAX_RENDERED_BODY_BYTES);
+    }
+
+    /// El recorte respeta los límites de carácter UTF-8: nunca corta un
+    /// carácter multibyte por la mitad (lo que causaría un panic al indexar).
+    #[test]
+    fn clamp_respects_utf8_char_boundaries() {
+        // "€" ocupa 3 bytes, así que el límite no cae en un borde exacto.
+        let body = "€".repeat(MAX_RENDERED_BODY_BYTES);
+
+        let (rendered, clamped) = clamp_rendered_body(&body);
+
+        assert!(clamped);
+        assert!(rendered.len() <= MAX_RENDERED_BODY_BYTES);
+        assert!(
+            rendered.chars().all(|c| c == '€'),
+            "el recorte no debe partir caracteres multibyte"
+        );
+    }
+
+    /// `format_bytes` usa la unidad adecuada según la magnitud.
+    #[test]
+    fn format_bytes_picks_a_readable_unit() {
+        assert_eq!(format_bytes(512), "512 bytes");
+        assert_eq!(format_bytes(2048), "2.0 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
     }
 }

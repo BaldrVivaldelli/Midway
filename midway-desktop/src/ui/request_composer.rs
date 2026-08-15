@@ -290,23 +290,35 @@ pub fn editor<'a>(
 /// Tests (Tarea 5.8) ya tienen su editor real; solo Body sigue mostrando un
 /// placeholder.
 fn config_tabs<'a>(active_tab: &'a RequestTabState, ds: &DesignSystem) -> Element<'a, Message> {
-    let entries = vec![
+    let entries: Vec<(
+        RequestTab,
+        &'static str,
+        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
+    )> = vec![
         (
             RequestTab::Params,
             "Params",
-            key_value_editor(&active_tab.draft.query, KeyValueTarget::Query),
+            Box::new(move || key_value_editor(&active_tab.draft.query, KeyValueTarget::Query)),
         ),
         (
             RequestTab::Headers,
             "Headers",
-            key_value_editor(&active_tab.draft.headers, KeyValueTarget::Headers),
+            Box::new(move || key_value_editor(&active_tab.draft.headers, KeyValueTarget::Headers)),
         ),
-        (RequestTab::Auth, "Auth", auth_tab(active_tab)),
-        (RequestTab::Body, "Body", body_tab(active_tab)),
+        (
+            RequestTab::Auth,
+            "Auth",
+            Box::new(move || auth_tab(active_tab)),
+        ),
+        (
+            RequestTab::Body,
+            "Body",
+            Box::new(move || body_tab(active_tab)),
+        ),
         (
             RequestTab::Tests,
             "Tests",
-            tests_tab_editor(&active_tab.draft.response_tests),
+            Box::new(move || tests_tab_editor(&active_tab.draft.response_tests)),
         ),
     ];
 
