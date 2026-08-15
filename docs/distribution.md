@@ -2,8 +2,7 @@
 
 Este paquete deja preparada una cadena de release más madura en **GitHub Releases** con:
 
-- instaladores por plataforma
-- firma / notarización donde corresponde
+- instaladores para **Linux** y **Windows**
 - `latest.json` para auto-update estable
 - `latest-beta.json` para canal beta
 - `SHA256SUMS.txt`
@@ -18,11 +17,10 @@ Este paquete deja preparada una cadena de release más madura en **GitHub Releas
 - `src-tauri/tauri.release.conf.json`
 - `src-tauri/tauri.beta.conf.json`
 - `src-tauri/tauri.windows.conf.json`
-- `src-tauri/tauri.macos.conf.json`
 - `src-tauri/tauri.linux.conf.json`
 - `src-tauri/src/lib.rs` con `tauri-plugin-updater` y `tauri-plugin-process`
 - `src-tauri/capabilities/default.json` con `updater:default` y `process:default`
-- `scripts/release/render-tauri-config.mjs`
+- `scripts/release/render-packager-config.mjs`
 - `scripts/release/generate-checksums.mjs`
 - `scripts/release/generate-updater-json.mjs`
 - `src/components/UpdateCenterCard.tsx`
@@ -77,21 +75,12 @@ Publican:
 - `MIDWAY_PUBLISHER`
 - `MIDWAY_HOMEPAGE`
 
-El workflow inyecta esas variables en `scripts/release/render-tauri-config.mjs`, que genera en runtime:
+El workflow inyecta esas variables en `scripts/release/render-packager-config.mjs`, que genera en runtime la configuración de `cargo-packager` por canal:
 
-- `src-tauri/tauri.release.generated.json`
-- `src-tauri/tauri.beta.generated.json`
+- `midway-desktop/packager.stable.generated.json`
+- `midway-desktop/packager.beta.generated.json`
 
 Así evitás hardcodear `OWNER/REPO`, pubkeys y el bundle identifier final en el repo fuente.
-
-### macOS signing / notarization
-
-- `APPLE_CERTIFICATE`
-- `APPLE_CERTIFICATE_PASSWORD`
-- `KEYCHAIN_PASSWORD`
-- y **uno** de estos dos esquemas:
-  - Apple ID: `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
-  - App Store Connect API: `APPLE_API_KEY`, `APPLE_API_ISSUER`, `APPLE_API_KEY_P8`
 
 ### Windows
 
@@ -121,7 +110,7 @@ Guardá:
 1. corre quality gate (`build`, tests y budget)
 2. corre `cargo check`
 3. genera overlays de config para stable / beta
-4. build matrix en Linux / Windows / macOS Intel / macOS Apple Silicon
+4. build matrix en **Linux** y **Windows**
 5. sube instaladores a un **draft release**
 6. genera **artifact attestations**
 7. descarga bundles locales
@@ -151,7 +140,7 @@ Notas prácticas:
 - instalar una build estable anterior
 - publicar una release draft estable nueva
 - validar update `stable -> stable`
-- confirmar firma / SmartScreen / Gatekeeper
+- confirmar firma / SmartScreen
 
 ### Beta
 
@@ -166,7 +155,6 @@ Notas prácticas:
 - que `latest.json` o `latest-beta.json` tenga URLs correctas
 - que `SHA256SUMS.txt` se haya adjuntado
 - que la release note automática tenga categorías razonables
-- que macOS quede firmado / notarizado
 - que Windows quede firmado
 - que el panel de update dentro de la app encuentre la nueva versión
 
@@ -177,6 +165,6 @@ Yo haría este orden:
 1. `v0.2.0-beta.1`
 2. instalar en máquinas limpias
 3. validar update beta -> beta
-4. corregir problemas de firma / notarización
+4. corregir problemas de firma en Windows o empaquetado en Linux
 5. `v0.2.0`
 6. validar update stable desde una build instalada previamente

@@ -1,0 +1,80 @@
+[package]
+name = "midway-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal desktop API client for developers"
+authors = ["BaldrVivaldelli"]
+license = "MIT"
+homepage = "https://github.com/BaldrVivaldelli/Midway"
+repository = "https://github.com/BaldrVivaldelli/Midway"
+
+[dependencies]
+midway-core = { path = "../midway-core" }
+iced = { version = "=0.14.0", features = ["tokio", "highlighter", "tiny-skia"] }
+iced_highlighter = "=0.14.0"
+dirs = "=6.0.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "multipart", "stream"] }
+futures-util = "=0.3.32"
+semver = "=1.0.28"
+sha2 = "=0.10.9"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+proptest = "=1.11.0"
+tempfile = "=3.27.0"
+wiremock = "=0.6.5"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# ---------------------------------------------------------------------------
+# Empaquetado / distribución (Fase 7, Requisitos 8.1, 8.2, 11.1)
+#
+# Herramienta de empaquetado: `cargo-packager` (reemplaza tauri-build / Tauri CLI).
+# Versión pinneada (Requisito 11.1, sin rangos abiertos): 0.11.8
+#   - publicada 2025-11-27 (dentro de los últimos 12 meses => cumple Criterio 8.1)
+#   - instalación reproducible en CI (tarea 15.4):
+#       cargo install cargo-packager --version =0.11.8 --locked
+#
+# Esta configuración preserva la metadata y los formatos que producía Tauri:
+#   - app metadata:   productName, identifier, category, descriptions, publisher
+#   - íconos:         copiados a midway-desktop/icons/ (auto-contenido para Fase 8)
+#   - formatos:       Windows NSIS/MSI (wix) + Linux AppImage/deb, x86_64
+#
+# Los valores por-canal (stable/beta: identifier, productName, homepage, publisher)
+# se inyectan en release mediante el script de render (tarea 15.2); esta tabla es
+# la configuración base equivalente a src-tauri/tauri.conf.json.
+# ---------------------------------------------------------------------------
+[package.metadata.packager]
+product-name = "Midway"
+identifier = "com.aatv.midway"
+category = "DeveloperTool"
+description = "Minimal desktop API client for developers"
+long-description = "Midway is a minimalist desktop API client for developers focused on progressive disclosure, low cognitive load and fast request workflows."
+publisher = "Midway"
+homepage = "https://github.com/BaldrVivaldelli/Midway"
+license-file = "../LICENSE"
+authors = ["BaldrVivaldelli"]
+# Compila el binario release antes de empaquetar (perfil release => `cargo packager --release`).
+before-packaging-command = "cargo build --release --bin midway-desktop"
+# Formatos por plataforma: cargo-packager solo genera los válidos para el SO actual,
+# por lo que en Windows produce NSIS (.exe) y WiX/MSI (.msi), y en Linux AppImage y deb.
+formats = ["nsis", "wix", "appimage", "deb"]
+icons = [
+    "icons/32x32.png",
+    "icons/128x128.png",
+    "icons/128x128@2x.png",
+    "icons/icon.icns",
+    "icons/icon.ico",
+]
+
+[[package.metadata.packager.binaries]]
+path = "midway-desktop"
+main = true
+
+# Preserva el uso de Time-Stamp Protocol (RFC 3161) que tenía tauri.windows.conf.json.
+# La estrategia de firma concreta (certificado / signCommand) se completa en CI (tarea 15.4).
+[package.metadata.packager.windows]
+tsp = true

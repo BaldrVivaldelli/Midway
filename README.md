@@ -1,6 +1,6 @@
 # Midway
 
-Cliente API de escritorio hecho con **Tauri + Rust + React**, diseñado con foco en una experiencia **KISS**, dark mode y **progressive disclosure**.
+Cliente API de escritorio hecho **100% en Rust** sobre [`iced`](https://iced.rs), diseñado con foco en una experiencia **KISS**, dark mode y **progressive disclosure**.
 
 La idea de Midway es simple: que el flujo principal se sienta liviano y natural, más cerca de **Insomnia/Postman** en familiaridad, pero con una UI más calmada y menos ruidosa.
 
@@ -15,7 +15,7 @@ Midway es un API Client para desarrollo con estas prioridades:
 - **Tabs** para Params, Headers, Auth, Body y Tests
 - **Response panel** claro, con status, tiempo y headers legibles
 - **Workspace** separado para Environments, Data, History y Diagnostics
-- lógica de ejecución, persistencia y secretos resuelta mayormente del lado **Rust**
+- toda la app (UI, ejecución, persistencia y secretos) resuelta en **Rust**, sin runtime web ni JavaScript
 
 ## Principios de UX
 
@@ -125,7 +125,7 @@ Soporta:
 
 - **Secrets en keychain** del sistema operativo
 - **Command Palette** (`⌘/Ctrl + K`) para acciones rápidas, colecciones y requests
-- editor real con **CodeMirror** para body / preview / response
+- editor de código nativo (`iced` `text_editor` + `iced_highlighter`) con resaltado de sintaxis para body / preview / response
 - **format JSON**, lint JSON y búsqueda dentro del editor
 - **multipart/form-data** con campos de texto o archivos
 - cancelación manual del request en curso
@@ -133,9 +133,9 @@ Soporta:
 - import de **OpenAPI v3** (**JSON o YAML**) y Postman desde archivo o payload pegado
 - export del request actual como **cURL**, **fetch** o **axios**
 - export nativo de **colección Midway** para compartir o reimportar
-- diagnostics locales para errores/crashes del frontend
-- **updater in-app** con check, descarga, instalación y relaunch
-- smoke tests + tests UI + **budgets de tamaño** (`npm run test`, `npm run size:check`)
+- diagnostics locales para errores/crashes de la UI (con error boundary por componente)
+- **updater in-app** con check, descarga, verificación de checksum, instalación y relaunch
+- suite de tests unitarios, de integración y **property-based** (`proptest`) sobre el workspace (`cargo test --workspace`)
 
 ## Shortcuts
 
@@ -152,87 +152,109 @@ Soporta:
 
 ## Stack técnico
 
-### Frontend
+Midway es una aplicación **100% Rust**, organizada como un **Cargo workspace** con dos crates:
 
-- React
-- TypeScript
-- Vite
-- CodeMirror
-- Tauri API
+### `midway-desktop` (binario / GUI)
 
-### Backend / Desktop
+- **Rust**
+- **iced** (arquitectura Elm: `Message` / `update` / `view`) para toda la UI
+- `iced_aw` para tabs y `iced_highlighter` para resaltado de sintaxis
+- `reqwest` para la descarga del updater
+- `semver` + `sha2` para comparación de versiones y verificación de checksums
 
-- Tauri
-- Rust
-- SQLite
-- reqwest
-- keyring del sistema operativo
+### `midway-core` (dominio / infraestructura / runtime)
+
+- **Rust**
+- lógica de dominio, ejecución de requests, interop (Postman / OpenAPI / bundle nativo) y testing
+- SQLite vía `tokio-rusqlite` para persistencia
+- `reqwest` para las peticiones HTTP
+- `keyring` para secretos en el keychain del sistema operativo
+
+> Nota histórica: versiones previas de Midway usaban un frontend **React + TypeScript + Vite** empaquetado con **Tauri**. Esa capa fue eliminada por completo en la migración a `iced`; ya no forma parte del stack.
 
 ## Cómo levantar el proyecto
 
-### Desarrollo web
+Requisitos: un toolchain de **Rust** reciente (`rustup` + `cargo`). No hace falta Node ni ningún gestor de paquetes de JavaScript para desarrollar o correr la app.
+
+### Ejecutar la app en desarrollo
 
 ```bash
-npm install
-npm run dev
+cargo run -p midway-desktop
 ```
 
-### Desarrollo desktop con Tauri
+### Compilar el workspace
 
 ```bash
-npm install
-npm run tauri:dev
+cargo build
+```
+
+### Correr los tests (workspace completo)
+
+```bash
+cargo test --workspace
 ```
 
 ### Quality gate local
 
 ```bash
-npm run build:ci
+cargo check --workspace
+cargo test --workspace
 ```
 
-### Build frontend
+### Build de release
 
 ```bash
-npm run build
+cargo build --release --bin midway-desktop
 ```
 
-### Build desktop
+### Empaquetar instaladores (opcional)
+
+El empaquetado usa [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) (reemplaza al CLI de Tauri). Genera los formatos válidos para el SO actual (Windows NSIS/MSI, Linux AppImage/deb):
 
 ```bash
-npm run tauri:build
+cargo install cargo-packager --version =0.11.8 --locked
+cargo packager --release
 ```
 
 ## Estructura general
 
-```text
-src/
-  App.tsx
-  App.css
-  main.tsx
-  components/
-  lib/
-  tauri/
-    api.ts
-    types.ts
+Cargo workspace con dos crates:
 
-src-tauri/
+```text
+Cargo.toml            # workspace: members = ["midway-core", "midway-desktop"]
+
+midway-core/          # lógica de dominio, infraestructura y runtime (lib)
   src/
-    commands/
     domain/
     infra/
     runtime/
+    app/
+
+midway-desktop/       # binario GUI en iced
+  src/
+    main.rs
+    app.rs             # Message / update / view (arquitectura Elm)
+    state.rs
+    ui/                # componentes de UI (text_editor, etc.)
+    curl.rs
+    command_palette.rs
+    collection_runner.rs
+    session.rs
+    diagnostics.rs
+    updater.rs
+  icons/
 ```
 
 ## Distribución y releases
 
 El repo ya trae una base seria de distribución:
 
-- workflow de **CI** con `build`, tests, budget de tamaño y `cargo check`
-- workflow de **release** con draft releases en GitHub
+- workflow de **CI** con `cargo check --workspace` y `cargo test --workspace`
+- workflow de **release** que empaqueta con `cargo-packager` y publica draft releases en GitHub
 - **artifact attestations** de GitHub Actions
 - generación de `latest.json` / `latest-beta.json` para updater
 - generación de `SHA256SUMS.txt`
-- configuración por plataforma para **Windows**, **macOS** y **Linux**
+- configuración por plataforma para **Windows** y **Linux**
 - categorías de release notes en `.github/release.yml`
 - overlays generados de config para no hardcodear repo/pubkey/bundle identifier
 
