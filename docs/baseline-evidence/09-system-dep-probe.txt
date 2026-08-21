@@ -1,0 +1,484 @@
+
+===== 0. Entorno =====
+fecha:  2026-08-21T08:35:35-03:00
+uname:  Linux 6.18.36 x86_64
+distro: NAME=NixOS VERSION_ID="26.05" 
+rustc:  rustc 1.95.0 (59807616e 2026-04-14) (built from a source tarball)
+cargo:  cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+PKG_CONFIG_PATH=/nix/store/7vxs654j460qbxf3idgzwb92g4zwlbwi-dbus-1.16.2-dev/lib/pkgconfig:/nix/store/w1cmsd5kg0jsj76cxj1vgfrsw3gk86yh-sqlite-3.51.2-dev/lib/pkgconfig
+
+NOTA: el runner de CI es ubuntu-22.04. Esta máquina NO lo es, así que el resultado
+no se transfiere a CI como una corrida equivalente; se transfiere como evidencia
+sobre el grafo de dependencias de Cargo, que es el mismo en las dos máquinas.
+
+===== 1. Ausencia de las cuatro dependencias en esta máquina =====
+-- apt/dpkg (los cuatro paquetes son paquetes Debian; sin dpkg no pueden estar instalados como tales) --
+dpkg AUSENTE del PATH: esta máquina no tiene gestor de paquetes Debian
+
+-- pkg-config: módulos que expondrían las bibliotecas de desarrollo --
+  webkit2gtk-4.1: ausente
+  webkit2gtk-4.0: ausente
+  javascriptcoregtk-4.1: ausente
+  libsoup-3.0: ausente
+  appindicator3-0.1: ausente
+  ayatana-appindicator3-0.1: ausente
+  librsvg-2.0: ausente
+  gtk+-3.0: ausente
+
+-- patchelf como ejecutable en PATH --
+  patchelf AUSENTE del PATH
+
+-- bibliotecas compartidas visibles para el enlazador dinámico --
+  ninguna coincidencia en la caché de ld
+  /home/avivaldelli/.nix-profile/lib: sin coincidencias
+
+===== 2. Grafo de dependencias: qué bibliotecas de sistema puede necesitar el workspace =====
+Declaraciones `links` de todos los paquetes del grafo resuelto (--all-features).
+Un crate solo puede enlazar contra una biblioteca de sistema declarándola acá o
+emitiendo flags desde su build script; `links` es la lista canónica.
+  paquetes en el grafo: 543
+  paquetes con links:   5
+    libdbus-sys -> links = dbus
+    libsqlite3-sys -> links = sqlite3
+    objc-sys -> links = objc_0_3
+    ring -> links = ring_core_0_17_14_
+    wasm-bindgen-shared -> links = wasm_bindgen
+
+-- crates de la era Tauri / pila WebKit / GTK buscados en Cargo.lock --
+  ninguna coincidencia: el grafo no contiene ningún crate de esa pila
+
+===== 3. cargo check --workspace (con las cuatro dependencias ausentes) =====
+    Checking libdbus-sys v0.2.7
+    Checking libsqlite3-sys v0.35.0
+    Checking dbus v0.9.12
+    Checking rusqlite v0.37.0
+    Checking tokio-rusqlite v0.7.0
+    Checking dbus-secret-service v4.1.0
+    Checking keyring v3.6.3
+    Checking midway-core v0.1.0 (/home/avivaldelli/projects/personal/Midway/midway-core)
+    Checking midway-desktop v0.1.0 (/home/avivaldelli/projects/personal/Midway/midway-desktop)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.01s
+exit code cargo check: 0
+
+===== 4. cargo test --workspace (con las cuatro dependencias ausentes) =====
+   Compiling dbus-secret-service v4.1.0
+   Compiling rusqlite v0.37.0
+   Compiling keyring v3.6.3
+   Compiling tokio-rusqlite v0.7.0
+   Compiling midway-core v0.1.0 (/home/avivaldelli/projects/personal/Midway/midway-core)
+   Compiling midway-desktop v0.1.0 (/home/avivaldelli/projects/personal/Midway/midway-desktop)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.84s
+     Running unittests src/lib.rs (target/debug/deps/midway_core-98c90995f41ebeb4)
+
+running 54 tests
+test domain::cookies::tests::empty_string_url_returns_empty_vec ... ok
+test domain::cookies::tests::invalid_url_returns_empty_vec ... ok
+test domain::cookies::tests::new_jar_returns_empty_cookies ... ok
+test domain::cookies::tests::provider_returns_cloned_arc ... ok
+test domain::http::domain_surface_tests::auth_config_has_exactly_four_variants ... ok
+test domain::http::domain_surface_tests::body_mode_has_exactly_four_variants ... ok
+test domain::cookies::tests::reads_cookies_set_via_jar ... ok
+test domain::http::domain_surface_tests::http_method_all_has_exactly_seven_variants ... ok
+test domain::cookies::tests::cookies_scoped_by_domain ... ok
+test domain::interop::tests::detects_openapi_documents ... ok
+test domain::interop::tests::native_v1_bundle_with_empty_folders_deserializes_correctly ... ok
+test domain::interop::tests::imports_openapi_paths_into_requests ... ok
+test domain::interop::tests::native_v1_bundle_without_folders_deserializes_correctly ... ok
+test domain::interop::tests::postman_export_fails_if_folder_references_nonexistent_parent ... ok
+test domain::interop::tests::postman_export_empty_folder_produces_empty_item_array ... ok
+test domain::interop::tests::postman_export_fails_if_request_references_nonexistent_folder ... ok
+test domain::interop::tests::openapi_import_produces_no_folders ... ok
+test domain::interop::tests::native_v1_roundtrip_no_spurious_folders ... ok
+test domain::workspace::tests::association_cross_collection_rejected ... ok
+test domain::workspace::tests::association_no_folder_is_valid ... ok
+test domain::interop::tests::postman_export_without_folders_produces_flat_items ... ok
+test domain::workspace::tests::association_same_collection_is_valid ... ok
+test domain::interop::tests::postman_export_nested_folders_preserves_hierarchy ... ok
+test domain::workspace::tests::name_empty_after_trim ... ok
+test domain::workspace::tests::name_empty_string ... ok
+test domain::workspace::tests::name_length_counts_unicode_characters_instead_of_bytes ... ok
+test domain::workspace::tests::name_too_long ... ok
+test domain::workspace::tests::name_valid_100_chars ... ok
+test domain::workspace::tests::name_valid_single_char ... ok
+test domain::workspace::tests::name_valid_with_surrounding_whitespace ... ok
+test domain::workspace::tests::placement_cross_collection_parent ... ok
+test domain::workspace::tests::placement_direct_cycle ... ok
+test domain::workspace::tests::placement_indirect_cycle ... ok
+test domain::workspace::tests::placement_no_parent_is_valid ... ok
+test domain::workspace::tests::placement_parent_not_found ... ok
+test domain::workspace::tests::placement_valid_nested ... ok
+test infra::sqlite_repository::tests::rename_folder_rejects_invalid_name_and_unknown_id_without_mutation ... ok
+test infra::sqlite_repository::tests::delete_folder_rejects_unknown_id_without_mutating_existing_tree ... ok
+test infra::sqlite_repository::tests::create_folder_persists_trimmed_root_and_nested_placement ... ok
+test infra::sqlite_repository::tests::create_folder_rejects_missing_and_cross_collection_parents_without_mutation ... ok
+test infra::sqlite_repository::tests::missing_entities_are_reported_as_not_found ... ok
+test infra::sqlite_repository::tests::create_folder_rejects_invalid_names_without_mutating_the_collection ... ok
+test infra::sqlite_repository::tests::delete_collection_cascades_to_folders_and_requests ... ok
+test infra::sqlite_repository::tests::delete_folder_cascades_to_children_and_requests ... ok
+test infra::sqlite_repository::tests::rename_collection_preserves_requests_and_updates_name ... ok
+test infra::sqlite_repository::tests::save_request_persists_selected_folder_atomically ... ok
+test infra::sqlite_repository::tests::save_request_rejects_folder_from_another_collection_without_inserting ... ok
+test infra::sqlite_repository::tests::delete_folder_rolls_back_when_a_cascaded_request_delete_fails ... ok
+test infra::sqlite_repository::tests::rename_folder_persists_trimmed_name_and_preserves_identity_and_parent ... ok
+test infra::sqlite_repository::tests::delete_request_removes_only_selected_request ... ok
+test infra::sqlite_repository::tests::delete_folder_removes_only_its_subtree_and_preserves_unrelated_content ... ok
+test infra::sqlite_repository::tests::update_request_folder_rejects_cross_collection_without_mutation ... ok
+test infra::sqlite_repository::tests::update_request_folder_moves_between_folders_and_back_to_root ... ok
+test infra::sqlite_repository::tests::property_14_history_bounded_and_ordered_by_recency ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
+
+     Running tests/no_tauri_dependency.rs (target/debug/deps/no_tauri_dependency-33fecb7989998439)
+
+running 1 test
+test midway_core_no_depende_de_tauri ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+     Running tests/response_body_limit.rs (target/debug/deps/response_body_limit-68e7f929c5c2eabb)
+
+running 4 tests
+test body_under_limit_is_returned_intact ... ok
+test default_entry_point_applies_the_default_limit ... ok
+test truncation_does_not_corrupt_multibyte_characters ... ok
+test body_over_limit_is_truncated_at_the_cap ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/workspace_snapshot_folders.rs (target/debug/deps/workspace_snapshot_folders-b171634cef9bc2ef)
+
+running 2 tests
+test snapshot_import_preserves_nested_folders_and_request_assignment ... ok
+test invalid_folder_tree_rolls_back_the_entire_snapshot_import ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests src/main.rs (target/debug/deps/midway_desktop-8257886440ed64cb)
+
+running 299 tests
+test app::debug_layout_tests::degenerate_and_non_finite_widths_have_a_defined_layout ... ok
+test app::debug_layout_tests::narrow_debug_area_uses_stacked_layout ... ok
+test app::debug_layout_tests::wide_debug_area_uses_side_by_side_layout ... ok
+test app::error_boundary_tests::guarded_view_passes_through_on_success ... ok
+test app::import_name_collision_tests::unique_name_against_appends_suffix_on_single_collision ... ok
+test app::import_name_collision_tests::unique_name_against_skips_all_already_used_suffixes ... ok
+test app::panel_resize_tests::both_dividers_share_the_same_three_visual_states ... ok
+test app::panel_resize_tests::global_mouse_events_map_to_drag_messages ... ok
+test app::panel_resize_tests::request_panel_width_for_available_collapses_to_minimum_when_space_is_tight ... ok
+test app::panel_resize_tests::request_panel_width_for_available_passes_through_inside_range ... ok
+test app::error_boundary_tests::guarded_view_catches_panic_and_records_crash ... ok
+test app::panel_resize_tests::request_panel_width_from_cursor_clamps_outside_range ... ok
+test app::import_name_collision_tests::unique_name_against_returns_candidate_unchanged_when_no_collision ... ok
+test app::panel_resize_tests::request_panel_width_from_cursor_handles_degenerate_inputs ... ok
+test app::panel_resize_tests::request_panel_width_from_cursor_ignores_available_width ... ok
+test app::panel_resize_tests::request_panel_width_for_available_handles_non_finite_inputs ... ok
+test app::panel_resize_tests::request_panel_width_from_cursor_passes_through_inside_range ... ok
+test app::panel_resize_tests::response_height_divider_propagates_the_area_geometry_to_the_reducer ... ok
+test app::panel_resize_tests::response_height_drag_state_compares_by_divider_not_by_geometry ... ok
+test app::panel_resize_tests::request_panel_width_keeps_both_panes_usable ... ok
+test app::panel_resize_tests::response_panel_height_for_available_handles_non_finite_inputs ... ok
+test app::panel_resize_tests::response_panel_height_for_available_preserves_the_baseline_range ... ok
+test app::panel_resize_tests::response_panel_height_for_available_reserves_the_request_editor_minimum ... ok
+test app::panel_resize_tests::response_panel_height_from_cursor_handles_non_finite_inputs ... ok
+test app::panel_resize_tests::response_panel_height_from_cursor_is_clamped_to_supported_range ... ok
+test app::panel_resize_tests::response_panel_height_tracks_cursor_from_bottom_edge ... ok
+test app::error_boundary_tests::property_23_guarded_view_isolates_arbitrary_panics ... ok
+test app::panel_resize_tests::tree_pane_width_clamps_exactly_at_range_boundaries ... ok
+test app::panel_resize_tests::tree_pane_width_handles_degenerate_cursor_coordinates ... ok
+test app::panel_resize_tests::tree_pane_width_is_clamped_to_supported_range ... ok
+test app::panel_resize_tests::tree_pane_width_tracks_cursor_after_activity_bar ... ok
+test app::debug_layout_tests::property_4_debug_pane_layout_is_total_and_decided_by_breakpoint ... ok
+test app::resolve_startup_collection_tests::property_7_empty_collections_returns_none ... ok
+test app::run_progress_label_tests::every_phase_has_a_spanish_label ... ok
+test app::run_progress_label_tests::finished_phase_reports_the_counters ... ok
+test app::run_progress_label_tests::per_request_phases_degrade_without_a_request_name ... ok
+test app::run_progress_label_tests::per_request_phases_name_the_request_and_its_position ... ok
+test app::panel_resize_tests::property_5_resize_bounds_clamp_and_are_idempotent ... ok
+test app::panel_resize_tests::panel_resize_ignores_cursor_movement_without_active_drag ... ok
+test app::panel_resize_tests::response_height_drag_is_ignored_without_active_drag ... ok
+test app::panel_resize_tests::panel_resize_start_drag_and_end_updates_state ... ok
+test app::error_boundary_tests::guarded_update_passes_through_on_success ... ok
+test app::panel_resize_tests::response_height_resize_tracks_cursor_and_persists_on_release ... ok
+test app::panel_resize_tests::divider_hover_tracks_only_the_current_handle ... ok
+test app::panel_resize_tests::stacked_divider_drag_resolves_to_the_height_the_layout_renders ... ok
+test app::panel_resize_tests::request_response_resize_tracks_cursor_after_left_panels ... ok
+test app::error_boundary_tests::guarded_update_catches_panic_and_records_crash ... ok
+test app::tests::eviction_ignores_tabs_without_response ... ok
+test app::tests::eviction_preserves_response_metadata_and_original_size ... ok
+test app::tests::eviction_frees_other_tabs_bodies_and_keeps_the_active_one ... ok
+test app::resolve_startup_collection_tests::property_7_non_empty_collections_returns_session_or_first ... ok
+test app::navigation_toggle_preserves_composer_state_tests::property_4_home_toggle_preserves_composer_state ... ok
+test app::tests::changing_save_collection_resets_selected_folder ... ok
+test app::tests::closing_a_clean_tab_closes_immediately_without_showing_the_prompt ... ok
+test app::tests::closing_a_tab_with_draft_matching_saved_draft_closes_immediately ... ok
+test app::tests::keyboard_close_active_tab_shortcut_closes_the_active_tab ... ok
+test app::tests::closing_more_than_limit_tabs_keeps_stack_bounded_evicting_oldest ... ok
+test app::tests::closing_a_tab_pushes_it_to_the_front_of_closed_tabs ... ok
+test app::tests::initial_workspace_load_restores_saved_baseline_without_overwriting_edits ... ok
+test app::tests::closing_a_tab_with_draft_differing_from_saved_draft_shows_the_prompt ... ok
+test app::tests::keyboard_close_active_tab_shortcut_with_no_active_tab_is_a_no_op ... ok
+test app::tests::closing_a_dirty_tab_shows_the_unsaved_changes_prompt_instead_of_closing ... ok
+test app::tests::keyboard_ctrl_shift_p_settings_pressed_closes_an_already_open_preview ... ok
+test app::tests::keyboard_ctrl_enter_send_pressed_marks_active_tab_as_sending ... ok
+test app::tests::keyboard_ctrl_dot_toggle_collapsed_flips_workspace_panel_collapsed ... ok
+test app::tests::keyboard_escape_closes_active_tab_preview_when_palette_is_closed ... ok
+test app::tests::keyboard_escape_closes_palette_first_when_both_palette_and_preview_are_open ... ok
+test app::session_restore_property_tests::property_3_session_restore_preserves_panel_sizes_and_theme ... ok
+test app::tests::lifo_order_is_preserved_across_close_and_reopen_cycles ... ok
+test app::tests::keyboard_go_to_tab_shortcut_out_of_range_is_a_no_op ... ok
+test app::tests::keyboard_save_requested_without_active_tab_is_a_no_op ... ok
+test app::tests::keyboard_new_blank_tab_requested_opens_and_activates_blank_tab ... ok
+test app::tests::keyboard_save_requested_opens_save_dialog_for_active_tab ... ok
+test app::tests::keyboard_escape_with_nothing_open_is_a_no_op ... ok
+test app::tests::keyboard_go_to_tab_shortcut_activates_tab_at_index ... ok
+test app::tests::palette_dismissed_closes_palette_without_executing_any_action ... ok
+test app::tests::palette_item_selected_new_request_action_opens_blank_tab_and_closes_palette ... ok
+test app::tests::palette_item_selected_request_opens_saved_request_in_new_tab ... ok
+test app::tests::palette_item_selected_request_reuses_already_open_tab ... ok
+test app::tests::palette_item_selected_with_unknown_id_closes_palette_without_mutating_tabs ... ok
+test app::tests::palette_query_changed_is_stored_and_reflected_in_search_results ... ok
+test app::tests::palette_toggled_closes_an_already_open_palette ... ok
+test app::tests::palette_toggled_opens_palette_with_blank_query ... ok
+test app::tests::palette_search_with_no_matches_returns_empty_results ... ok
+test app::tests::property_12_environment_name_validation_invariants ... ok
+test app::tests::property_17_unique_name_against_never_collides_and_preserves_unchanged_candidate ... ok
+test app::tests::property_13_oversized_payload_rejected_before_parsing ... ok
+test app::error_boundary_tests::property_23_guarded_update_isolates_arbitrary_panics ... ok
+test app::tests::property_4_malformed_curl_does_not_mutate_existing_content ... ok
+test app::tests::property_3_non_curl_text_is_inserted_literally ... ok
+test app::tests::property_2_curl_paste_routing_by_tab_state ... ok
+test app::tests::reconcile_workspace_after_crud_cleans_deleted_request_references ... ok
+test app::tests::reconcile_workspace_after_deleting_active_collection_selects_fallback ... ok
+test app::tests::restore_pending_session_falls_back_to_index_zero_on_stale_active_tab_id ... ok
+test app::tests::restore_pending_session_populates_session_panel_sizes ... ok
+test app::tests::restore_pending_session_resolves_active_tab_id_to_matching_index ... ok
+test app::tests::restore_pending_session_restores_all_open_tabs_with_correct_content_and_ids ... ok
+test app::tests::restore_pending_session_with_empty_open_tabs_falls_back_to_single_blank_tab ... ok
+test app::tests::restore_pending_session_with_no_pending_restore_uses_default_blank_tab ... ok
+test app::tests::reopening_pops_most_recently_closed_tab_and_activates_it ... ok
+test app::tests::reopening_with_empty_closed_tabs_is_a_no_op ... ok
+test app::tests::save_completion_updates_tab_baseline_workspace_and_active_collection ... ok
+test app::tests::save_dialog_defaults_to_active_collection ... ok
+test app::tests::property_17_import_name_collision_preserves_both_elements ... ok
+test app::tests::tests_tab_editor_body_text_contains_passes_via_real_engine ... ok
+test app::tests::tests_tab_editor_final_url_not_contains_fails_via_real_engine ... ok
+test app::tests::send_flow_end_to_end_hits_mock_server_and_populates_response ... ok
+test app::tests::send_flow_end_to_end_reports_error_when_server_unreachable ... ok
+test app::tests::tests_tab_editor_header_empty_selector_becomes_none_and_fails_via_real_engine ... ok
+test app::tests::tests_tab_editor_header_exists_passes_via_real_engine ... ok
+test app::tests::tests_tab_editor_json_pointer_equals_passes_via_real_engine ... ok
+test app::tests::tests_tab_editor_status_equals_passes_via_real_engine ... ok
+test app::tests::unsaved_changes_cancel_leaves_the_tab_open_and_unchanged ... ok
+test app::tests::unsaved_changes_discard_closes_the_tab_without_persisting ... ok
+test app::tests::unsaved_changes_save_completed_error_keeps_the_prompt_open_without_closing_the_tab ... ok
+test app::tests::unsaved_changes_save_completed_success_sets_saved_draft_and_closes_the_tab ... ok
+test app::theme_toggle_characterization_tests::toggled_from_dark_yields_light_and_marks_session_dirty ... ok
+test app::theme_toggle_characterization_tests::toggled_from_light_yields_dark_and_marks_session_dirty ... ok
+test app::theme_toggle_characterization_tests::toggled_twice_returns_to_initial_mode_and_leaves_session_dirty ... ok
+test collection_runner::tests::run_collection_cancelled_before_starting_produces_empty_report ... ok
+test collection_runner::tests::run_collection_continues_after_network_error_and_assertion_failure ... ok
+test collection_runner::tests::run_collection_emits_progress_events_in_expected_phase_order ... ok
+test command_palette::tests::empty_query_returns_items_unscored_in_original_order_truncated_to_limit ... ok
+test command_palette::tests::score_exact_title_match_wins_over_prefix ... ok
+test command_palette::tests::score_is_case_and_whitespace_insensitive_via_normalization ... ok
+test command_palette::tests::score_keyword_exact_wins_over_title_substring ... ok
+test command_palette::tests::score_keyword_prefix_wins_over_subtitle_substring ... ok
+test command_palette::tests::score_keyword_substring_wins_over_title_token_prefix ... ok
+test command_palette::tests::score_no_match_returns_negative_one ... ok
+test command_palette::tests::score_subtitle_substring_wins_over_keyword_substring ... ok
+test command_palette::tests::score_title_prefix_wins_over_keyword_exact ... ok
+test command_palette::tests::score_title_substring_wins_over_keyword_prefix ... ok
+test command_palette::tests::score_title_token_prefix_rule_is_unreachable_since_title_substring_always_wins ... ok
+test command_palette::tests::search_excludes_items_with_negative_score ... ok
+test command_palette::tests::search_sorts_by_score_descending_then_title_ascending_on_tie ... ok
+test command_palette::tests::search_truncates_to_limit_after_sorting ... ok
+test command_palette::tests::whitespace_only_query_is_treated_as_empty ... ok
+test collection_runner::tests::run_collection_with_no_requests_emits_only_started_and_finished ... ok
+test curl::tests::property_1_curl_parse_equivalence_with_ts_reference ... ok
+test diagnostics::tests::append_crash_record_persists_and_reads_back_most_recent_first ... ok
+test app::tests::property_13_unsupported_or_corrupt_payload_rejected_without_mutation ... ok
+test session::tests::active_collection_id_round_trip_property_tests::property_10_active_collection_id_round_trip ... ok
+test session::tests::active_collection_id_round_trip_property_tests::property_10_missing_active_collection_id_deserializes_to_none ... ok
+test session::tests::atomic_write_leaves_no_residual_tmp_file_and_final_file_is_correct ... ok
+test session::tests::load_session_or_default::incompatible_version_returns_discarded_incompatible_with_reason ... ok
+test session::tests::load_session_or_default::invalid_json_returns_discarded_corrupt_with_reason ... ok
+test session::tests::load_session_or_default::missing_file_returns_not_found_without_notification ... ok
+test session::tests::load_session_or_default::valid_compatible_file_returns_loaded_with_exact_snapshot ... ok
+test session::tests::load_session_or_default_property_tests::property_24_corrupt_or_incompatible_content_is_discarded_safely ... ok
+test session::tests::panel_sizes_from_older_session_default_request_panel_width ... ok
+test session::tests::read_missing_file_returns_err ... ok
+test session::tests::second_atomic_write_fully_replaces_previous_content ... ok
+test session::tests::session_schema_characterization_tests::panel_sizes_json_key_is_exactly_response_panel_height ... ok
+test session::tests::session_schema_characterization_tests::session_json_without_optional_fields_deserializes_with_defaults ... ok
+test session::tests::session_schema_characterization_tests::session_schema_version_tripwire_is_one ... ok
+test collection_runner::tests::run_collection_cancelled_mid_sequence_reports_only_completed_items ... ok
+test session::tests::session_snapshot_round_trip_property_tests::property_20_write_then_read_round_trips_arbitrary_snapshot ... ok
+test session::tests::write_then_read_round_trips_exact_snapshot ... ok
+test ui::activity_bar::tests::icon_color_differs_for_different_names ... ok
+test ui::activity_bar::tests::icon_color_is_deterministic ... ok
+test ui::activity_bar::tests::initials_deterministic ... ok
+test ui::activity_bar::tests::initials_empty_returns_fallback ... ok
+test ui::activity_bar::tests::initials_max_two_chars ... ok
+test ui::activity_bar::tests::initials_more_than_two_words ... ok
+test ui::activity_bar::tests::initials_single_char ... ok
+test ui::activity_bar::tests::initials_single_word_multiple_chars ... ok
+test ui::activity_bar::tests::initials_two_words ... ok
+test ui::activity_bar::tests::property_tests::property_2_tooltip_text_correctness ... ok
+test ui::activity_bar::tests::property_tests::property_8_home_icon_color_derivation ... ok
+test diagnostics::tests::append_crash_record_evicts_oldest_at_max_capacity ... ok
+test ui::activity_bar::tests::tooltip_text_activity ... ok
+test ui::activity_bar::tests::tooltip_text_collection_shows_full_name ... ok
+test ui::activity_bar::tests::tooltip_text_create_button ... ok
+test ui::activity_bar::tests::tooltip_text_home ... ok
+test ui::design_system::tests::accent_hue_is_purple_in_both_modes ... ok
+test ui::design_system::tests::dark_background_luminosity_below_12_percent ... ok
+test ui::design_system::tests::light_background_luminosity_above_85_percent ... ok
+test ui::design_system::tests::method_color_hue_ranges ... ok
+test ui::design_system::tests::method_color_pairwise_separation_at_least_15_degrees ... ok
+test ui::design_system::tests::status_color_bands ... ok
+test ui::empty_state::tests::every_action_label_is_non_empty ... ok
+test ui::empty_state::tests::every_spec_has_non_empty_title_and_hint ... ok
+test ui::empty_state::tests::no_assertions_spec_offers_add_assertion_action ... ok
+test ui::empty_state::tests::no_cookies_spec_has_title_hint_and_no_action ... ok
+test ui::empty_state::tests::no_open_requests_spec_offers_new_request_action ... ok
+test ui::empty_state::tests::no_response_spec_has_title_hint_and_no_action ... ok
+test ui::empty_state::tests::response_in_flight_spec_has_progress_hint_and_no_action ... ok
+test ui::empty_state::tests::spec_strings_use_voseo_not_tuteo ... ok
+test ui::activity_bar::tests::property_tests::property_9_active_collection_indicator_independence_from_focus ... ok
+test ui::request_composer::language_tests::api_key_placement_labels_are_in_spanish_except_the_protocol_term ... ok
+test ui::request_composer::language_tests::assertion_operator_labels_are_fully_in_spanish ... ok
+test ui::request_composer::language_tests::assertion_source_labels_translate_the_prose_and_keep_the_spec_names ... ok
+test ui::request_composer::language_tests::auth_kind_labels_translate_only_the_absence_of_a_scheme ... ok
+test ui::request_composer::language_tests::body_mode_labels_translate_the_mode_and_keep_the_format_names ... ok
+test ui::request_composer::language_tests::form_data_field_kind_labels_are_in_spanish ... ok
+test ui::request_composer::language_tests::no_environment_option_is_in_spanish ... ok
+test ui::request_composer::language_tests::retired_english_labels_do_not_come_back ... ok
+test ui::request_composer::presentation_tests::body_editor_uses_a_workspace_sized_height ... ok
+test ui::request_composer::presentation_tests::matching_method_prefix_is_not_repeated_in_the_title ... ok
+test ui::request_composer::presentation_tests::meaningful_or_different_prefix_is_preserved ... ok
+test ui::request_tree_pane::tests::build_tree_case_insensitive_sort ... ok
+test ui::request_tree_pane::tests::build_tree_nested_folders ... ok
+test ui::request_tree_pane::tests::build_tree_sorts_folders_before_requests_alphabetically ... ok
+test ui::request_tree_pane::tests::filter_tree_empty_query_returns_full_tree ... ok
+test ui::request_tree_pane::tests::filter_tree_matches_requests_case_insensitive ... ok
+test ui::request_tree_pane::tests::filter_tree_no_matches_returns_none ... ok
+test ui::request_tree_pane::tests::filter_tree_preserves_ancestor_folders ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::a_second_drag_is_ignored_while_a_move_is_in_flight ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::invalid_drop_target_is_rejected_without_persistence ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::opening_the_same_saved_request_twice_reuses_its_tab ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::property_6_tree_pane_state_derivation ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::request_can_move_from_folder_back_to_root ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::request_drag_to_folder_starts_one_persistence_task ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::request_drop_on_same_folder_is_a_no_op ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::request_move_completion_updates_snapshot_or_exposes_error ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::request_tree_does_not_repeat_matching_method_prefix ... ok
+test ui::request_tree_pane::tree_pane_state_property_tests::tree_view_builds_with_hover_actions_and_active_drop_target ... ok
+test ui::response_inspector::tests::assertion_rows_data_passthrough ... ok
+test ui::response_inspector::tests::assertion_verdict_labels_are_in_spanish ... ok
+test ui::response_inspector::tests::clamp_leaves_small_bodies_untouched ... ok
+test ui::response_inspector::tests::clamp_respects_utf8_char_boundaries ... ok
+test ui::response_inspector::tests::clamp_truncates_large_bodies_to_the_cap ... ok
+test ui::response_inspector::tests::format_bytes_picks_a_readable_unit ... ok
+test ui::response_inspector::tests::header_rows_data_passthrough ... ok
+test ui::response_inspector::tests::retired_english_verdict_labels_do_not_come_back ... ok
+test ui::response_inspector::tests::summary_line_passthrough ... ok
+test ui::save_request_modal::tests::folder_options_include_root_and_nested_paths ... ok
+test app::tests::property_8_preview_matches_current_draft_exactly ... ok
+test session::tests::session_snapshot_serde_round_trip_property_tests::property_2_session_snapshot_json_round_trip_preserves_theme_and_panel_sizes ... ok
+test app::tests::property_15_duplicate_environment_name_rejected_without_mutation ... ok
+test app::tests::property_11_auth_type_change_discards_previous_fields ... ok
+test ui::theme_settings::tests::property_1_theme_toggle_changes_mode_emits_event_and_is_involutive ... ok
+test ui::workspace_crud_modal::tests::cascade_warning_is_explicit_for_collection_and_folder ... ok
+test ui::workspace_crud_modal::tests::create_and_rename_copy_uses_the_expected_labels ... ok
+test ui::workspace_crud_modal::tests::create_and_rename_modes_use_the_name_input ... ok
+test ui::workspace_crud_modal::tests::every_delete_mode_is_destructive_and_has_irreversible_copy ... ok
+test updater::tests::accepting_relaunch_targets_the_installed_version ... ok
+test updater::tests::artifact_file_name_from_url_extracts_last_segment ... ok
+test updater::tests::build_check_report_flags_newer_version_and_finds_platform_entry ... ok
+test updater::tests::build_check_report_no_update_for_same_version_and_missing_platform ... ok
+test updater::tests::check_for_update_end_to_end_available_but_no_artifact_for_current_platform ... ok
+test updater::tests::check_for_update_end_to_end_reports_available_update_with_platform_entry ... ok
+test updater::tests::compute_sha256_hex_matches_known_vectors ... ok
+test updater::tests::current_platform_key_has_os_and_arch ... ok
+test updater::tests::declining_relaunch_keeps_current_session_and_defers_new_version ... ok
+test updater::tests::download_artifact_propagates_http_error_status ... ok
+test updater::tests::download_artifact_returns_full_body_and_reports_final_100_percent ... ok
+test updater::tests::download_progress_percent_handles_zero_total_and_unknown_total ... ok
+test updater::tests::download_progress_percent_is_bounded_between_0_and_100 ... ok
+test updater::tests::download_progress_percent_never_exceeds_hundred_across_scales ... ok
+test app::tests::property_10_key_value_crud_matches_reference_model ... ok
+test updater::tests::is_update_available_false_when_equal_or_older ... ok
+test updater::tests::is_update_available_rejects_invalid_current_version ... ok
+test updater::tests::is_update_available_rejects_invalid_latest_version ... ok
+test updater::tests::is_update_available_respects_prerelease_precedence ... ok
+test updater::tests::is_update_available_tolerates_v_prefix ... ok
+test updater::tests::is_update_available_true_when_manifest_is_newer ... ok
+test updater::tests::manifest_file_name_matches_channel ... ok
+test updater::tests::manifest_url_uses_github_releases_endpoint_per_channel ... ok
+test updater::tests::manifest_url_with_base_trims_trailing_slash ... ok
+test updater::tests::next_startup_uses_installed_version_regardless_of_decision ... ok
+test updater::tests::offer_relaunch_references_installed_and_running_versions ... ok
+test updater::tests::parse_sha256sums_ignores_blank_lines_and_binary_marker ... ok
+test updater::tests::parse_sha256sums_reads_standard_two_space_format ... ok
+test updater::tests::pipeline_edge_equal_or_older_version_reports_no_update ... ok
+test updater::tests::pipeline_edge_invalid_checksum_aborts_install_and_preserves_version ... ok
+test updater::tests::pipeline_nominal_path_available_verified_and_installed_succeeds ... ok
+test updater::tests::progress_update_interval_guarantees_at_least_one_per_second ... ok
+test updater::tests::property_checksum_gate::property_26_checksum_gate_is_strict_iff_match ... ok
+test updater::tests::property_installed_version_preservation::property_27_failure_preserves_installed_version ... ok
+test updater::tests::property_semver_comparison::property_25_is_update_available_agrees_with_semver_ordering ... ok
+test updater::tests::resolve_update_attempt_failure_preserves_installed_version ... ok
+test updater::tests::resolve_update_attempt_success_reports_installed_version ... ok
+test updater::tests::resolve_update_attempt_verification_failure_preserves_installed_version ... ok
+test updater::tests::update_manifest_deserializes_published_schema ... ok
+test updater::tests::updater_error_maps_from_app_errors_by_stage ... ok
+test updater::tests::updater_error_message_is_descriptive_and_states_preservation ... ok
+test updater::tests::verify_artifact_checksum_detects_mismatch ... ok
+test updater::tests::verify_artifact_checksum_is_case_insensitive ... ok
+test updater::tests::verify_artifact_checksum_matches_when_hash_agrees ... ok
+test updater::tests::verify_checksum_gate_errors_on_corruption_without_installing ... ok
+test updater::tests::verify_checksum_gate_errors_when_artifact_absent_from_sums ... ok
+test updater::tests::verify_checksum_gate_matches_by_basename_when_path_differs ... ok
+test updater::tests::verify_checksum_gate_ok_on_match_allows_install ... ok
+test app::tests::property_22_unsaved_changes_prompt_actions_are_correct ... ok
+test updater::tests::download_reports_progress_at_least_once_per_second_and_finishes_at_100_percent ... ok
+test collection_runner::tests::property_18_sequential_execution_and_consolidated_report ... ok
+test diagnostics::tests::property_14_diagnostics_bounded_and_ordered_by_recency ... ok
+test app::tests::property_9_default_tab_selection_by_method_unless_manual_override ... ok
+test app::tests::property_16_deleting_active_environment_clears_selection ... ok
+test app::tests::property_19_autosave_tick_clears_dirty_and_avoids_rewrites_when_clean ... ok
+test app::tests::property_21_closed_tabs_stack_is_bounded_and_reopens_lifo ... ok
+test app::panel_resize_tests::property_6_response_divider_drag_bounds_height_and_keeps_state_consistent ... ok
+test ui::text_editor::tests::text_search_finds_all_matches_without_omission_or_duplication ... ok
+test app::collection_selection_workspace_property_tests::property_5_collection_selection_from_workspace_transitions_focus ... ok
+test ui::text_editor::tests::lint_json_reports_exact_error_position ... ok
+test ui::onboarding::tests::property_1_onboarding_visibility_invariant ... ok
+test ui::top_bar::breadcrumb_property_tests::property_3_breadcrumb_format_correctness ... ok
+test ui::text_editor::tests::format_json_is_idempotent_and_preserves_value ... ok
+
+test result: ok. 299 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.12s
+
+     Running tests/vertical_import_guard.rs (target/debug/deps/vertical_import_guard-137cdd3a7b1bb470)
+
+running 3 tests
+test normalize_path_separators_colapsa_espacios_alrededor_de_dos_puntos ... ok
+test strip_comments_elimina_comentarios_y_preserva_cadenas ... ok
+test la_vertical_no_referencia_dependencias_prohibidas ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests midway_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit code cargo test: 0
+
+===== 5. Alcance de lo que esta sonda NO decide =====
+1. No es una corrida de ubuntu-22.04. Si alguna de las cuatro fuera necesaria solo por
+   una diferencia de esa imagen (y no por el grafo de Cargo), esta sonda no lo detecta.
+2. No ejecuta `cargo packager`. El Req 10.5 conserva una dependencia si es necesaria para
+   compilar, testear O EMPAQUETAR; el empaquetado no se mide acá.
+3. `cargo check` y `cargo test` son headless y no abren ventana: no ejercitan la
+   inicialización del backend gráfico en tiempo de ejecución.

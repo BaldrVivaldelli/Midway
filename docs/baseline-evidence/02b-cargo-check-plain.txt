@@ -1,0 +1,71 @@
+    Checking futures v0.3.32
+    Checking naga v27.0.3
+   Compiling tiny-xlib v0.2.5
+    Checking ring v0.17.14
+   Compiling rustls v0.23.41
+   Compiling getrandom v0.3.4
+   Compiling libdbus-sys v0.2.7
+    Checking fancy-regex v0.16.2
+error: failed to run custom build command for `libdbus-sys v0.2.7`
+
+Caused by:
+  process didn't exit successfully: `/home/avivaldelli/projects/personal/Midway/target/debug/build/libdbus-sys-bd32125d34c37a1f/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-changed=build_vendored.rs
+  cargo:rerun-if-env-changed=DBUS_1_NO_PKG_CONFIG
+  cargo:rerun-if-env-changed=PKG_CONFIG_x86_64-unknown-linux-gnu
+  cargo:rerun-if-env-changed=PKG_CONFIG_x86_64_unknown_linux_gnu
+  cargo:rerun-if-env-changed=HOST_PKG_CONFIG
+  cargo:rerun-if-env-changed=PKG_CONFIG
+  cargo:rerun-if-env-changed=DBUS_1_STATIC
+  cargo:rerun-if-env-changed=DBUS_1_DYNAMIC
+  cargo:rerun-if-env-changed=PKG_CONFIG_ALL_STATIC
+  cargo:rerun-if-env-changed=PKG_CONFIG_ALL_DYNAMIC
+  cargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64-unknown-linux-gnu
+  cargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64_unknown_linux_gnu
+  cargo:rerun-if-env-changed=HOST_PKG_CONFIG_PATH
+  cargo:rerun-if-env-changed=PKG_CONFIG_PATH
+  cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu
+  cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu
+  cargo:rerun-if-env-changed=HOST_PKG_CONFIG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR
+  cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64-unknown-linux-gnu
+  cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_gnu
+  cargo:rerun-if-env-changed=HOST_PKG_CONFIG_SYSROOT_DIR
+  cargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR
+
+  --- stderr
+  pkg_config failed: 
+  pkg-config exited with status code 1
+  > PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 pkg-config --libs --cflags dbus-1 'dbus-1 >= 1.6'
+
+  pkg-config output:
+    Package dbus-1 was not found in the pkg-config search path.
+    Perhaps you should add the directory containing `dbus-1.pc'
+    to the PKG_CONFIG_PATH environment variable
+    No package 'dbus-1' found
+    Package dbus-1 was not found in the pkg-config search path.
+    Perhaps you should add the directory containing `dbus-1.pc'
+    to the PKG_CONFIG_PATH environment variable
+    No package 'dbus-1' found
+
+  The system library `dbus-1` required by crate `libdbus-sys` was not found.
+  The file `dbus-1.pc` needs to be installed and the PKG_CONFIG_PATH environment variable must contain its parent directory.
+  The PKG_CONFIG_PATH environment variable is not set.
+
+  HINT: if you have installed the library, try setting PKG_CONFIG_PATH to the directory containing `dbus-1.pc`.
+
+  One possible solution is to check whether packages
+  'libdbus-1-dev' and 'pkg-config' are installed:
+  On Ubuntu:
+  sudo apt install libdbus-1-dev pkg-config
+  On Fedora:
+  sudo dnf install dbus-devel pkgconf-pkg-config
+
+
+  thread 'main' (212578) panicked at /home/avivaldelli/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libdbus-sys-0.2.7/build.rs:25:9:
+  explicit panic
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+warning: build failed, waiting for other jobs to finish...
+EXIT=101

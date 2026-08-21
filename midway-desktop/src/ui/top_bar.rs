@@ -12,10 +12,10 @@ use iced::widget::{button, container, row, text};
 use iced::{Border, Element, Length};
 
 use crate::app::{
-    MainContentFocus, Message, Midway, ThemeMessage, TopBarMessage, TopBarMode,
-    WorkspacePanelSection,
+    MainContentFocus, Message, Midway, TopBarMessage, TopBarMode, WorkspacePanelSection,
 };
-use crate::ui::design_system::{DesignSystem, ThemeMode};
+use crate::ui::design_system::DesignSystem;
+use crate::ui::theme_settings;
 
 // ---------------------------------------------------------------------------
 // Breadcrumb segment model (Task 4.1, Requirements 3.1–3.5)
@@ -141,23 +141,11 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
     let tabs = row![debug_tab, test_tab].spacing(ds.spacing.sm);
 
     // --- Theme toggle (Req 1.6) ---
-    let theme_icon = match state.theme_mode {
-        ThemeMode::Light => "☀",
-        ThemeMode::Dark => "☾",
-    };
-    let theme_text_color = ds.palette.text_primary;
-    let theme_radius = ds.radius.control;
-    let theme_toggle = button(text(theme_icon).size(ds.typography.body.size).color(theme_text_color))
-        .padding(ds.spacing.sm)
-        .style(move |_theme, _status| button::Style {
-            text_color: theme_text_color,
-            border: Border {
-                radius: theme_radius.into(),
-                ..Border::default()
-            },
-            ..button::Style::default()
-        })
-        .on_press(Message::Theme(ThemeMessage::Toggled));
+    //
+    // Tarea 7.2 (Req 8.1, 8.6, 8.7): el control lo construye la vertical
+    // Tema/Ajustes. El Top_Bar solo lo ubica y envuelve sus mensajes en el
+    // `Message` raíz; ya no duplica el ícono ni el estilo del botón.
+    let theme_toggle = theme_settings::control(state.theme, ds).map(Message::Theme);
 
     // --- Compose the Top Bar row ---
     let background = ds.palette.background_secondary;
@@ -438,7 +426,7 @@ mod breadcrumb_property_tests {
             palette: crate::app::PaletteState::default(),
             runner: None,
             session: crate::app::SessionStoreState::default(),
-            theme_mode: ThemeMode::default(),
+            theme: crate::ui::theme_settings::ThemeSettingsState::default(),
             main_content_focus: focus,
             updater: crate::app::UpdaterState::default(),
             crash_log: Vec::new(),

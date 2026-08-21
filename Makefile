@@ -42,7 +42,7 @@ fmt-check: ## Verifica formato sin modificar archivos
 clippy: ## Lint con clippy (warnings como errores)
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 
-verify: check test ## Quality gate local equivalente a CI (check + test)
+verify: fmt-check check clippy test ## Quality gate local equivalente a CI (fmt-check + check + clippy + test)
 
 package: release ## Genera instaladores con cargo-packager (requiere cargo-packager instalado)
 	$(CARGO) packager --release

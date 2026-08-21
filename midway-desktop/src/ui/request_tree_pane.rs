@@ -490,6 +490,50 @@ fn font_for(style: &TextStyle) -> Font {
     }
 }
 
+/// Envuelve el contenido del explorador en su nivel de elevación
+/// (Req 9.1, diseño §8.2).
+///
+/// El explorador es el nivel intermedio de los tres: se apoya en
+/// `background_secondary` —entre el `background_primary` del editor de request
+/// y el `surface_elevated` del inspector de respuesta— y se separa del área de
+/// contenido con un borde derecho de 1 px en `border`.
+///
+/// El borde es una franja propia en vez de `container::Style::border` porque
+/// `iced::Border` es uniforme en los cuatro lados: un `width: 1.0` dibujaría
+/// también arriba, abajo y a la izquierda, encajonando el panel. La franja va
+/// dentro del ancho del panel, así que el divisor de arrastre que `app::view`
+/// coloca a continuación conserva su hitbox y su comportamiento intactos
+/// (Req 9.7).
+///
+/// Todos los colores salen de la escala existente de `DesignSystem`: no se
+/// introduce ningún color de marca nuevo (Req 9.8).
+fn pane_shell<'a>(content: Element<'a, Message>, ds: &DesignSystem) -> Element<'a, Message> {
+    let background = ds.palette.background_secondary;
+    let border_color = ds.palette.border;
+
+    let surface = container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(background.into()),
+            ..container::Style::default()
+        });
+
+    let right_border = container(column![])
+        .width(Length::Fixed(1.0))
+        .height(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(border_color.into()),
+            ..container::Style::default()
+        });
+
+    row![surface, right_border]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
 /// Renderiza el Request_Tree_Pane completo: filtro + árbol o estados vacíos.
 /// Uses `determine_tree_state` to decide which state to render (Task 11.1).
 pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
@@ -498,23 +542,10 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
     let body_font = font_for(&body);
     let secondary_font = font_for(&secondary);
 
-    let border_color = ds.palette.border;
-
     match determine_tree_state(state) {
         TreePaneState::NoCollections => {
             // Show nothing — onboarding in main panel handles this case
-            container(column![])
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(move |_theme| container::Style {
-                    border: Border {
-                        color: border_color,
-                        width: 1.0,
-                        radius: 0.0.into(),
-                    },
-                    ..container::Style::default()
-                })
-                .into()
+            pane_shell(column![].into(), ds)
         }
         TreePaneState::NoActiveCollection => {
             // Show "Seleccioná o creá una colección" with a Guided_Action
@@ -545,19 +576,14 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
                 .width(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Center);
 
-            container(content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_y(Length::Fill)
-                .style(move |_theme| container::Style {
-                    border: Border {
-                        color: border_color,
-                        width: 1.0,
-                        radius: 0.0.into(),
-                    },
-                    ..container::Style::default()
-                })
-                .into()
+            pane_shell(
+                container(content)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_y(Length::Fill)
+                    .into(),
+                ds,
+            )
         }
         TreePaneState::EmptyCollection => {
             let collection_id = state.active_collection_id.clone().unwrap_or_default();
@@ -627,18 +653,7 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
                 .padding(ds.spacing.md)
                 .width(Length::Fill);
 
-            container(content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(move |_theme| container::Style {
-                    border: Border {
-                        color: border_color,
-                        width: 1.0,
-                        radius: 0.0.into(),
-                    },
-                    ..container::Style::default()
-                })
-                .into()
+            pane_shell(content.into(), ds)
         }
         TreePaneState::Normal => {
             // Render tree as before: filter + tree content
@@ -978,7 +993,6 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
             .into()
     });
 
-    let border_color = ds.palette.border;
     let collection_id = active_collection
         .map(|collection| collection.collection.id.clone())
         .unwrap_or_default();
@@ -1105,18 +1119,7 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
 
     main_column = main_column.push(content);
 
-    container(main_column)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(move |_theme| container::Style {
-            border: Border {
-                color: border_color,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
+    pane_shell(main_column.into(), ds)
 }
 
 // ─── Render flattening ──────────────────────────────────────────────────────
@@ -1469,7 +1472,7 @@ mod tree_pane_state_property_tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
-            theme_mode: ThemeMode::default(),
+            theme: crate::ui::theme_settings::ThemeSettingsState::default(),
             main_content_focus: MainContentFocus::default(),
             updater: UpdaterState::default(),
             crash_log: Vec::new(),

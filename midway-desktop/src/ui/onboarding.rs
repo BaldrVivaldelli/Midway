@@ -136,7 +136,7 @@ mod tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
-            theme_mode: Default::default(),
+            theme: crate::ui::theme_settings::ThemeSettingsState::default(),
             main_content_focus: focus,
             updater: UpdaterState::default(),
             crash_log: Vec::new(),

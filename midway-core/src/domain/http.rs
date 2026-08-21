@@ -218,3 +218,144 @@ pub struct ResponseEnvelope {
     #[serde(default)]
     pub total_size_bytes: Option<u64>,
 }
+
+#[cfg(test)]
+mod domain_surface_tests {
+    //! Tests de caracterización de la superficie de dominio del baseline
+    //! (Tarea 4.7; Requisitos 4.7, 6.8).
+    //!
+    //! Estos tests **no juzgan** si la superficie actual es la deseada: fijan la
+    //! que existe hoy para que cualquier ampliación o recorte sea deliberada y
+    //! visible en el diff. Las variantes ausentes ya están decididas una por una en
+    //! `docs/adr/0007-variantes-ausentes-de-dominio.md` (`TRACE`, `CONNECT` y método
+    //! personalizado en `HttpMethod`; `UrlEncoded`, `Binary`, `GraphQL` y `Xml` en
+    //! `BodyMode`; `OAuth2`, `Digest`, `AwsSigV4`, `OAuth1`, `Ntlm`/`Hawk` y mTLS en
+    //! `AuthConfig`) y registradas en `docs/feature-matrix.md`. Si uno de estos tests
+    //! falla, la discusión arranca en ese ADR, no en el diff.
+    //!
+    //! Cada test combina dos mecanismos de tripwire:
+    //!
+    //! 1. Un `match` **exhaustivo sin brazo comodín**: agregar una variante rompe la
+    //!    compilación de este módulo, no solo una aserción en runtime.
+    //! 2. Una aserción de recuento sobre el listado local de variantes, que rompe si
+    //!    alguien agrega la variante al `enum` y al `match` pero no actualiza la
+    //!    caracterización.
+
+    use super::*;
+
+    /// Discriminante estable por variante, escrito a mano. El `match` es exhaustivo
+    /// y sin comodín: si `HttpMethod` gana o pierde una variante, esto no compila.
+    fn http_method_tag(method: HttpMethod) -> u8 {
+        match method {
+            HttpMethod::GET => 0,
+            HttpMethod::POST => 1,
+            HttpMethod::PUT => 2,
+            HttpMethod::PATCH => 3,
+            HttpMethod::DELETE => 4,
+            HttpMethod::HEAD => 5,
+            HttpMethod::OPTIONS => 6,
+        }
+    }
+
+    #[test]
+    fn http_method_all_has_exactly_seven_variants() {
+        assert_eq!(
+            HttpMethod::ALL.len(),
+            7,
+            "la superficie de HttpMethod del baseline es de 7 variantes; \
+             actualizar docs/feature-matrix.md y el ADR 0007 antes de cambiarla"
+        );
+
+        // `ALL` es la única fuente que consume la UI: debe cubrir cada variante
+        // exactamente una vez, sin duplicados ni faltantes.
+        let mut tags: Vec<u8> = HttpMethod::ALL.iter().copied().map(http_method_tag).collect();
+        tags.sort_unstable();
+        assert_eq!(tags, vec![0, 1, 2, 3, 4, 5, 6]);
+
+        // El orden de presentación también es comportamiento observable.
+        assert_eq!(
+            HttpMethod::ALL,
+            [
+                HttpMethod::GET,
+                HttpMethod::POST,
+                HttpMethod::PUT,
+                HttpMethod::PATCH,
+                HttpMethod::DELETE,
+                HttpMethod::HEAD,
+                HttpMethod::OPTIONS,
+            ]
+        );
+    }
+
+    /// `match` exhaustivo sin comodín sobre `BodyMode`.
+    fn body_mode_tag(mode: BodyMode) -> u8 {
+        match mode {
+            BodyMode::None => 0,
+            BodyMode::Json => 1,
+            BodyMode::Text => 2,
+            BodyMode::FormData => 3,
+        }
+    }
+
+    #[test]
+    fn body_mode_has_exactly_four_variants() {
+        let all = [
+            BodyMode::None,
+            BodyMode::Json,
+            BodyMode::Text,
+            BodyMode::FormData,
+        ];
+
+        assert_eq!(
+            all.len(),
+            4,
+            "la superficie de BodyMode del baseline es de 4 variantes; \
+             actualizar docs/feature-matrix.md y el ADR 0007 antes de cambiarla"
+        );
+
+        let mut tags: Vec<u8> = all.iter().copied().map(body_mode_tag).collect();
+        tags.sort_unstable();
+        assert_eq!(tags, vec![0, 1, 2, 3]);
+    }
+
+    /// `match` exhaustivo sin comodín sobre `AuthConfig`. Las variantes con datos
+    /// se ligan con `..` porque acá solo interesa la forma del `enum`.
+    fn auth_config_tag(auth: &AuthConfig) -> u8 {
+        match auth {
+            AuthConfig::None => 0,
+            AuthConfig::Bearer { .. } => 1,
+            AuthConfig::Basic { .. } => 2,
+            AuthConfig::ApiKey { .. } => 3,
+        }
+    }
+
+    #[test]
+    fn auth_config_has_exactly_four_variants() {
+        let all = [
+            AuthConfig::None,
+            AuthConfig::Bearer {
+                token: String::new(),
+            },
+            AuthConfig::Basic {
+                username: String::new(),
+                password: String::new(),
+            },
+            AuthConfig::ApiKey {
+                key: String::new(),
+                value: String::new(),
+                placement: ApiKeyPlacement::Header,
+            },
+        ];
+
+        assert_eq!(
+            all.len(),
+            4,
+            "la superficie de AuthConfig del baseline es de 4 variantes; \
+             actualizar docs/feature-matrix.md y el ADR 0007 antes de cambiarla"
+        );
+
+        let mut tags: Vec<u8> = all.iter().map(auth_config_tag).collect();
+        tags.sort_unstable();
+        assert_eq!(tags, vec![0, 1, 2, 3]);
+    }
+}

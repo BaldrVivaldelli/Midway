@@ -27,9 +27,9 @@ fn main() -> iced::Result {
 
 /// Devuelve el `iced::Theme` activo según el `ThemeMode` del estado.
 fn theme(state: &Midway) -> iced::Theme {
-    use crate::ui::design_system::{DesignSystem, ThemeMode};
+    use crate::ui::design_system::ThemeMode;
 
-    let ds = DesignSystem::for_mode(state.theme_mode);
+    let ds = state.theme.design_system();
     let p = ds.palette;
 
     let custom_palette = iced::theme::Palette {
@@ -41,7 +41,7 @@ fn theme(state: &Midway) -> iced::Theme {
         warning: iced::Color::from_rgb8(0xEF, 0xA0, 0x4E),
     };
 
-    match state.theme_mode {
+    match state.theme.mode() {
         ThemeMode::Dark => iced::Theme::custom_with_fn(
             "Midway Dark".to_string(),
             custom_palette,
