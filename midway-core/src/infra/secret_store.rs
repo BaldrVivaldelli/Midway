@@ -27,7 +27,8 @@ impl SecretStore {
         let entry = Entry::new(&self.service_name, alias)
             .map_err(|error| AppError::Secrets(error.to_string()))?;
 
-        entry.set_password(value)
+        entry
+            .set_password(value)
             .map_err(|error| AppError::Secrets(error.to_string()))
     }
 

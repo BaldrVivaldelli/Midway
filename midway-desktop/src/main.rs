@@ -42,16 +42,16 @@ fn theme(state: &Midway) -> iced::Theme {
     };
 
     match state.theme.mode() {
-        ThemeMode::Dark => iced::Theme::custom_with_fn(
-            "Midway Dark".to_string(),
-            custom_palette,
-            |palette| iced::theme::palette::Extended::generate(palette),
-        ),
-        ThemeMode::Light => iced::Theme::custom_with_fn(
-            "Midway Light".to_string(),
-            custom_palette,
-            |palette| iced::theme::palette::Extended::generate(palette),
-        ),
+        ThemeMode::Dark => {
+            iced::Theme::custom_with_fn("Midway Dark".to_string(), custom_palette, |palette| {
+                iced::theme::palette::Extended::generate(palette)
+            })
+        }
+        ThemeMode::Light => {
+            iced::Theme::custom_with_fn("Midway Light".to_string(), custom_palette, |palette| {
+                iced::theme::palette::Extended::generate(palette)
+            })
+        }
     }
 }
 

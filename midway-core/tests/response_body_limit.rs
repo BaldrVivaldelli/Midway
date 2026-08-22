@@ -112,7 +112,10 @@ async fn truncation_does_not_corrupt_multibyte_characters() {
     // `from_utf8_lossy` sustituye el carácter partido en lugar de fallar, así
     // que el resultado siempre es texto válido y renderizable.
     assert!(
-        response.body_text.chars().all(|c| c == 'é' || c == char::REPLACEMENT_CHARACTER),
+        response
+            .body_text
+            .chars()
+            .all(|c| c == 'é' || c == char::REPLACEMENT_CHARACTER),
         "el body truncado debe seguir siendo texto válido"
     );
 }

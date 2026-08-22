@@ -118,12 +118,8 @@ mod tests {
         let url = "https://example.com/path".parse::<Url>().unwrap();
 
         // Simulate a Set-Cookie by adding directly to the jar
-        handle
-            .jar
-            .add_cookie_str("session_id=abc123; Path=/", &url);
-        handle
-            .jar
-            .add_cookie_str("tracking=xyz; Path=/", &url);
+        handle.jar.add_cookie_str("session_id=abc123; Path=/", &url);
+        handle.jar.add_cookie_str("tracking=xyz; Path=/", &url);
 
         let cookies = handle.read_for_url("https://example.com/path");
         assert_eq!(cookies.len(), 2);

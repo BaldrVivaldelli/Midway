@@ -29,8 +29,6 @@ impl HttpMethod {
     ];
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyValueRow {
@@ -88,8 +86,13 @@ pub enum ApiKeyPlacement {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AuthConfig {
     None,
-    Bearer { token: String },
-    Basic { username: String, password: String },
+    Bearer {
+        token: String,
+    },
+    Basic {
+        username: String,
+        password: String,
+    },
     ApiKey {
         key: String,
         value: String,
@@ -123,7 +126,10 @@ pub struct ResolvedPair {
 
 #[derive(Debug, Clone)]
 pub enum ResolvedFormDataField {
-    Text { key: String, value: String },
+    Text {
+        key: String,
+        value: String,
+    },
     File {
         key: String,
         path: String,
@@ -268,7 +274,11 @@ mod domain_surface_tests {
 
         // `ALL` es la única fuente que consume la UI: debe cubrir cada variante
         // exactamente una vez, sin duplicados ni faltantes.
-        let mut tags: Vec<u8> = HttpMethod::ALL.iter().copied().map(http_method_tag).collect();
+        let mut tags: Vec<u8> = HttpMethod::ALL
+            .iter()
+            .copied()
+            .map(http_method_tag)
+            .collect();
         tags.sort_unstable();
         assert_eq!(tags, vec![0, 1, 2, 3, 4, 5, 6]);
 

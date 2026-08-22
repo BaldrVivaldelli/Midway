@@ -20,13 +20,13 @@ use iced::{Element, Length, Subscription, Task};
 use tokio::sync::oneshot;
 
 use midway_core::domain::http::{
-    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow, RequestDraft,
-    RequestPreview, ResponseEnvelope,
+    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow,
+    RequestDraft, RequestPreview, ResponseEnvelope,
 };
 use midway_core::domain::interop::{
-    detect_import_format, export_postman_collection, import_openapi_document, import_postman_collection,
-    make_native_bundle, parse_json_or_yaml_payload, parse_native_bundle, ImportedRequest, NativeWorkspaceBundle,
-    WorkspaceExportFormat, WorkspaceImportFormat,
+    detect_import_format, export_postman_collection, import_openapi_document,
+    import_postman_collection, make_native_bundle, parse_json_or_yaml_payload, parse_native_bundle,
+    ImportedRequest, NativeWorkspaceBundle, WorkspaceExportFormat, WorkspaceImportFormat,
 };
 use midway_core::domain::interpolation::{resolve_request, SecretRenderMode};
 use midway_core::domain::preview::make_preview;
@@ -35,11 +35,12 @@ use midway_core::domain::runner::{
 };
 use midway_core::domain::secrets::collect_secret_aliases;
 use midway_core::domain::testing::{
-    evaluate_response_assertions, AssertionOperator, AssertionReport, AssertionSource, ResponseAssertion,
+    evaluate_response_assertions, AssertionOperator, AssertionReport, AssertionSource,
+    ResponseAssertion,
 };
 use midway_core::domain::workspace::{
-    CollectionSummary, CollectionWithRequests, EnvironmentRecord, Folder, SaveEnvironmentInput, SaveFolderInput,
-    SaveRequestInput, WorkspaceSnapshot,
+    CollectionSummary, CollectionWithRequests, EnvironmentRecord, Folder, SaveEnvironmentInput,
+    SaveFolderInput, SaveRequestInput, WorkspaceSnapshot,
 };
 
 use crate::command_palette;
@@ -118,7 +119,9 @@ pub enum PanelDragState {
     RequestResponse,
     /// Divisor horizontal entre el editor de request y el inspector de
     /// respuesta en la disposición apilada del área Debug.
-    ResponseHeight { area_bottom_y: f32 },
+    ResponseHeight {
+        area_bottom_y: f32,
+    },
 }
 
 impl PartialEq for PanelDragState {
@@ -294,10 +297,16 @@ pub enum RequestComposerMessage {
     },
     /// El usuario alternó el checkbox "enabled" de una fila del editor
     /// key/value (Tarea 5.6, Requisito 3.8), identificada por `row_id`.
-    KeyValueRowEnabledToggled { target: KeyValueTarget, row_id: String },
+    KeyValueRowEnabledToggled {
+        target: KeyValueTarget,
+        row_id: String,
+    },
     /// El usuario presionó el botón de eliminar de una fila del editor
     /// key/value (Tarea 5.6, Requisito 3.8), identificada por `row_id`.
-    KeyValueRowRemoved { target: KeyValueTarget, row_id: String },
+    KeyValueRowRemoved {
+        target: KeyValueTarget,
+        row_id: String,
+    },
     /// El usuario presionó "Agregar assertion" en la tab Tests (Tarea 5.8,
     /// Requisito 3.9). Agrega una `domain::testing::ResponseAssertion`
     /// nueva (source `Status`, operator `Equals`, sin selector, `expected`
@@ -328,10 +337,16 @@ pub enum RequestComposerMessage {
     /// Tests (Tarea 5.8, Requisito 3.9), identificada por `assertion_id`.
     /// Un texto vacío se traduce a `None` (sin selector), acorde a la
     /// semántica de `ResponseAssertion::selector: Option<String>`.
-    AssertionSelectorChanged { assertion_id: String, selector: String },
+    AssertionSelectorChanged {
+        assertion_id: String,
+        selector: String,
+    },
     /// El usuario editó el `expected` de una assertion de la tab Tests
     /// (Tarea 5.8, Requisito 3.9), identificada por `assertion_id`.
-    AssertionExpectedChanged { assertion_id: String, expected: String },
+    AssertionExpectedChanged {
+        assertion_id: String,
+        expected: String,
+    },
     /// El usuario presionó el botón de eliminar de una assertion de la tab
     /// Tests (Tarea 5.8, Requisito 3.9), identificada por `assertion_id`.
     AssertionRemoved { assertion_id: String },
@@ -365,7 +380,10 @@ pub enum RequestComposerMessage {
     FormDataRowEnabledToggled { row_id: String },
     /// El usuario cambió el tipo (Text/File) de una fila del editor
     /// FormData, identificada por `row_id`.
-    FormDataRowKindChanged { row_id: String, kind: FormDataFieldKind },
+    FormDataRowKindChanged {
+        row_id: String,
+        kind: FormDataFieldKind,
+    },
     /// El usuario presionó el botón de eliminar de una fila del editor
     /// FormData, identificada por `row_id`.
     FormDataRowRemoved { row_id: String },
@@ -873,9 +891,7 @@ pub struct WorkspaceCrudDialogState {
 /// Mensajes del ABM de colecciones, carpetas y requests.
 #[derive(Debug, Clone)]
 pub enum WorkspaceCrudMessage {
-    CreateFolderRequested {
-        parent_folder_id: Option<String>,
-    },
+    CreateFolderRequested { parent_folder_id: Option<String> },
     RenameCollectionRequested(String),
     DeleteCollectionRequested(String),
     RenameFolderRequested(String),
@@ -1270,7 +1286,9 @@ pub struct UnsavedChangesPromptState {
 /// handle (mismo puntero `Arc`, mismo hash) no reconstruyen el stream, por
 /// lo que ese `take` solo ocurre una vez por ejecución.
 #[derive(Clone)]
-pub struct ProgressReceiverHandle(Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<CollectionRunProgressEvent>>>>);
+pub struct ProgressReceiverHandle(
+    Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<CollectionRunProgressEvent>>>>,
+);
 
 impl ProgressReceiverHandle {
     pub fn new(receiver: mpsc::UnboundedReceiver<CollectionRunProgressEvent>) -> Self {
@@ -1486,13 +1504,15 @@ impl Midway {
             }
         }
 
-        let (tabs, active_tab, session_active_collection_id) = restore_pending_session(&mut session);
+        let (tabs, active_tab, session_active_collection_id) =
+            restore_pending_session(&mut session);
         let theme = ThemeSettingsState::new(session.theme_mode);
 
         // El snapshot real se carga inmediatamente después de `Midway::new`.
         // Conservamos temporalmente el id de sesión para poder validarlo
         // contra las colecciones cuando llegue `WorkspaceSnapshotLoaded`.
-        let workspace_collections: Vec<midway_core::domain::workspace::CollectionWithRequests> = Vec::new();
+        let workspace_collections: Vec<midway_core::domain::workspace::CollectionWithRequests> =
+            Vec::new();
         let active_collection_id = session_active_collection_id;
 
         Self {
@@ -1591,7 +1611,11 @@ fn restore_pending_session(
     let session_active_collection_id = snapshot.active_collection_id;
 
     if tabs.is_empty() {
-        return (vec![RequestTabState::blank()], Some(0), session_active_collection_id);
+        return (
+            vec![RequestTabState::blank()],
+            Some(0),
+            session_active_collection_id,
+        );
     }
 
     let active_tab = snapshot
@@ -1681,7 +1705,9 @@ impl RequestTabState {
 fn default_tab_for_method(method: HttpMethod) -> RequestTab {
     match method {
         HttpMethod::GET | HttpMethod::HEAD | HttpMethod::OPTIONS => RequestTab::Params,
-        HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH | HttpMethod::DELETE => RequestTab::Body,
+        HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH | HttpMethod::DELETE => {
+            RequestTab::Body
+        }
     }
 }
 
@@ -1834,9 +1860,11 @@ where
                 format!("{component_name}: {message}"),
                 None,
             );
-            text(format!("Error en el componente {component_name}: ver Diagnostics"))
-                .color(iced::Color::from_rgb(0.8, 0.1, 0.1))
-                .into()
+            text(format!(
+                "Error en el componente {component_name}: ver Diagnostics"
+            ))
+            .color(iced::Color::from_rgb(0.8, 0.1, 0.1))
+            .into()
         }
     }
 }
@@ -1848,16 +1876,26 @@ where
 pub fn update(state: &mut Midway, message: Message) -> Task<Message> {
     match message {
         Message::Tick => Task::none(),
-        Message::RequestComposer(message) => {
-            guarded_update("RequestComposer", state, |state| update_request_composer(state, message))
-        }
+        Message::RequestComposer(message) => guarded_update("RequestComposer", state, |state| {
+            update_request_composer(state, message)
+        }),
         Message::ResponseInspector(message) => {
-            guarded_update("ResponseInspector", state, |state| update_response_inspector(state, message))
+            guarded_update("ResponseInspector", state, |state| {
+                update_response_inspector(state, message)
+            })
         }
-        Message::Workspace(message) => guarded_update("Workspace", state, |state| update_workspace(state, message)),
-        Message::Runner(message) => guarded_update("Runner", state, |state| update_runner(state, message)),
-        Message::Session(message) => guarded_update("Session", state, |state| update_session(state, message)),
-        Message::Palette(message) => guarded_update("Palette", state, |state| update_palette(state, message)),
+        Message::Workspace(message) => {
+            guarded_update("Workspace", state, |state| update_workspace(state, message))
+        }
+        Message::Runner(message) => {
+            guarded_update("Runner", state, |state| update_runner(state, message))
+        }
+        Message::Session(message) => {
+            guarded_update("Session", state, |state| update_session(state, message))
+        }
+        Message::Palette(message) => {
+            guarded_update("Palette", state, |state| update_palette(state, message))
+        }
         // Vertical Tema/Ajustes (Tarea 7.2, Req 8.1, 8.4, 8.6): la App_Raíz
         // no aplica la transición de estado, solo delega en
         // `theme_settings::update` y traduce cada Evento_Ascendente en su
@@ -1874,23 +1912,25 @@ pub fn update(state: &mut Midway, message: Message) -> Task<Message> {
 
             Task::none()
         }),
-        Message::Keyboard(message) => guarded_update("Keyboard", state, |state| update_keyboard(state, message)),
+        Message::Keyboard(message) => {
+            guarded_update("Keyboard", state, |state| update_keyboard(state, message))
+        }
         Message::Updater(_) => Task::none(),
-        Message::ActivityBar(message) => {
-            guarded_update("ActivityBar", state, |state| update_activity_bar(state, message))
+        Message::ActivityBar(message) => guarded_update("ActivityBar", state, |state| {
+            update_activity_bar(state, message)
+        }),
+        Message::Tree(message) => guarded_update("Tree", state, |state| {
+            crate::ui::request_tree_pane::update_tree(state, message)
+        }),
+        Message::WorkspaceCrud(message) => guarded_update("WorkspaceCrud", state, |state| {
+            update_workspace_crud(state, message)
+        }),
+        Message::TopBar(message) => {
+            guarded_update("TopBar", state, |state| update_top_bar(state, message))
         }
-        Message::Tree(message) => {
-            guarded_update("Tree", state, |state| {
-                crate::ui::request_tree_pane::update_tree(state, message)
-            })
-        }
-        Message::WorkspaceCrud(message) => {
-            guarded_update("WorkspaceCrud", state, |state| update_workspace_crud(state, message))
-        }
-        Message::TopBar(message) => guarded_update("TopBar", state, |state| update_top_bar(state, message)),
-        Message::PanelResize(message) => {
-            guarded_update("PanelResize", state, |state| update_panel_resize(state, message))
-        }
+        Message::PanelResize(message) => guarded_update("PanelResize", state, |state| {
+            update_panel_resize(state, message)
+        }),
     }
 }
 
@@ -1903,7 +1943,11 @@ pub fn update(state: &mut Midway, message: Message) -> Task<Message> {
 fn update_runner(state: &mut Midway, message: RunnerMessage) -> Task<Message> {
     match message {
         RunnerMessage::StartRequested(input) => {
-            if state.runner.as_ref().is_some_and(|runner| runner.running.is_some()) {
+            if state
+                .runner
+                .as_ref()
+                .is_some_and(|runner| runner.running.is_some())
+            {
                 return Task::none();
             }
 
@@ -1921,9 +1965,14 @@ fn update_runner(state: &mut Midway, message: RunnerMessage) -> Task<Message> {
 
             Task::perform(
                 async move {
-                    crate::collection_runner::run_collection(app_state, input, progress_tx, cancel_rx)
-                        .await
-                        .map_err(|error| error.to_string())
+                    crate::collection_runner::run_collection(
+                        app_state,
+                        input,
+                        progress_tx,
+                        cancel_rx,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
                 },
                 |result| Message::Runner(RunnerMessage::Finished(result)),
             )
@@ -2002,7 +2051,10 @@ fn update_session(state: &mut Midway, message: SessionMessage) -> Task<Message> 
             let snapshot = build_session_snapshot(state);
 
             Task::perform(
-                async move { crate::session::write_session_snapshot(&snapshot).map_err(|error| error.to_string()) },
+                async move {
+                    crate::session::write_session_snapshot(&snapshot)
+                        .map_err(|error| error.to_string())
+                },
                 |result| Message::Session(SessionMessage::AutosaveWritten(result)),
             )
         }
@@ -2049,7 +2101,11 @@ pub fn build_palette_items(state: &Midway) -> Vec<command_palette::CommandPalett
         id: PALETTE_ACTION_NEW_REQUEST.to_string(),
         title: "Nuevo request".to_string(),
         subtitle: Some("Abrir una pestaña en blanco".to_string()),
-        keywords: vec!["new".to_string(), "request".to_string(), "nuevo".to_string()],
+        keywords: vec![
+            "new".to_string(),
+            "request".to_string(),
+            "nuevo".to_string(),
+        ],
         section: "Acción".to_string(),
     }];
 
@@ -2058,7 +2114,11 @@ pub fn build_palette_items(state: &Midway) -> Vec<command_palette::CommandPalett
             id: format!("{PALETTE_PREFIX_COLLECTION}{}", collection.collection.id),
             title: collection.collection.name.clone(),
             subtitle: Some(format!("{} request(s)", collection.requests.len())),
-            keywords: vec!["collection".to_string(), "colección".to_string(), collection.collection.name.clone()],
+            keywords: vec![
+                "collection".to_string(),
+                "colección".to_string(),
+                collection.collection.name.clone(),
+            ],
             section: "Colección".to_string(),
         });
 
@@ -2318,7 +2378,8 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
     match message {
         WorkspaceCrudMessage::CreateFolderRequested { parent_folder_id } => {
             let Some(collection_id) = state.active_collection_id.clone() else {
-                state.tree.error = Some("Seleccioná una colección antes de crear una carpeta.".to_string());
+                state.tree.error =
+                    Some("Seleccioná una colección antes de crear una carpeta.".to_string());
                 return Task::none();
             };
 
@@ -2328,7 +2389,12 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
                     .collections
                     .iter()
                     .find(|collection| collection.collection.id == collection_id)
-                    .and_then(|collection| collection.folders.iter().find(|folder| folder.id == folder_id))
+                    .and_then(|collection| {
+                        collection
+                            .folders
+                            .iter()
+                            .find(|folder| folder.id == folder_id)
+                    })
                     .map(|folder| folder.name.clone())
             });
             if parent_folder_id.is_some() && parent_name.is_none() {
@@ -2361,10 +2427,7 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
                 state.tree.error = Some("No se pudo encontrar la colección.".to_string());
                 return Task::none();
             };
-            let is_delete = matches!(
-                message,
-                WorkspaceCrudMessage::DeleteCollectionRequested(_)
-            );
+            let is_delete = matches!(message, WorkspaceCrudMessage::DeleteCollectionRequested(_));
             if is_delete
                 && state
                     .runner
@@ -2503,17 +2566,15 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
                         WorkspaceCrudKind::CreateFolder {
                             collection_id,
                             parent_folder_id,
-                        } => {
-                            app_state
-                                .repository
-                                .create_folder(SaveFolderInput {
-                                    collection_id,
-                                    parent_folder_id,
-                                    name,
-                                })
-                                .await
-                                .map(|_| ())
-                        }
+                        } => app_state
+                            .repository
+                            .create_folder(SaveFolderInput {
+                                collection_id,
+                                parent_folder_id,
+                                name,
+                            })
+                            .await
+                            .map(|_| ()),
                         WorkspaceCrudKind::RenameCollection { collection_id } => app_state
                             .repository
                             .rename_collection(collection_id, name)
@@ -2595,15 +2656,13 @@ fn reconcile_workspace_after_crud(state: &mut Midway, workspace: WorkspaceSnapsh
         .map(|tab| tab.id.clone());
 
     state.tabs.retain(|tab| {
-        !tab
-            .draft
+        !tab.draft
             .id
             .as_ref()
             .is_some_and(|request_id| deleted_request_ids.contains(request_id))
     });
     state.closed_tabs.retain(|tab| {
-        !tab
-            .draft
+        !tab.draft
             .id
             .as_ref()
             .is_some_and(|request_id| deleted_request_ids.contains(request_id))
@@ -2805,7 +2864,10 @@ mod panel_resize_tests {
 
     #[test]
     fn tree_pane_width_tracks_cursor_after_activity_bar() {
-        assert_eq!(tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + 320.0), 320.0);
+        assert_eq!(
+            tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + 320.0),
+            320.0
+        );
     }
 
     #[test]
@@ -3063,11 +3125,10 @@ mod panel_resize_tests {
 
     #[test]
     fn global_mouse_events_map_to_drag_messages() {
-        let moved = panel_resize_message_for_event(&iced::Event::Mouse(
-            iced::mouse::Event::CursorMoved {
+        let moved =
+            panel_resize_message_for_event(&iced::Event::Mouse(iced::mouse::Event::CursorMoved {
                 position: iced::Point::new(444.0, 120.0),
-            },
-        ));
+            }));
         assert!(matches!(
             moved,
             Some(PanelResizeMessage::DividerDragged { x, y }) if x == 444.0 && y == 120.0
@@ -3081,9 +3142,8 @@ mod panel_resize_tests {
             Some(PanelResizeMessage::DividerDragEnded)
         ));
 
-        let left_window = panel_resize_message_for_event(&iced::Event::Mouse(
-            iced::mouse::Event::CursorLeft,
-        ));
+        let left_window =
+            panel_resize_message_for_event(&iced::Event::Mouse(iced::mouse::Event::CursorLeft));
         assert!(matches!(
             left_window,
             Some(PanelResizeMessage::DividerDragEnded)
@@ -3103,7 +3163,10 @@ mod panel_resize_tests {
             },
         );
 
-        assert_eq!(state.session.panel_sizes.workspace_panel_width, initial_width);
+        assert_eq!(
+            state.session.panel_sizes.workspace_panel_width,
+            initial_width
+        );
         assert!(!state.session.dirty);
     }
 
@@ -3169,7 +3232,10 @@ mod panel_resize_tests {
             TREE_PANE_MIN_WIDTH
         );
         // Infinito positivo: máximo.
-        assert_eq!(tree_pane_width_from_cursor(f32::INFINITY), TREE_PANE_MAX_WIDTH);
+        assert_eq!(
+            tree_pane_width_from_cursor(f32::INFINITY),
+            TREE_PANE_MAX_WIDTH
+        );
         // Comportamiento observado con NaN: `f32::clamp` no clampea NaN, lo
         // propaga. El baseline no entra en pánico, pero tampoco acota.
         assert!(tree_pane_width_from_cursor(f32::NAN).is_nan());
@@ -3189,10 +3255,7 @@ mod panel_resize_tests {
             DEBUG_PANE_MIN_WIDTH
         );
         assert_eq!(
-            request_panel_width_from_cursor(
-                origin + DEBUG_REQUEST_PANE_MAX_WIDTH,
-                tree_pane_width
-            ),
+            request_panel_width_from_cursor(origin + DEBUG_REQUEST_PANE_MAX_WIDTH, tree_pane_width),
             DEBUG_REQUEST_PANE_MAX_WIDTH
         );
     }
@@ -3997,7 +4060,10 @@ fn update_panel_resize(state: &mut Midway, message: PanelResizeMessage) -> Task<
             }
             Task::none()
         }
-        PanelResizeMessage::DividerDragged { x: current_x, y: current_y } => {
+        PanelResizeMessage::DividerDragged {
+            x: current_x,
+            y: current_y,
+        } => {
             // El eje lo elige el divisor activo: los verticales siguen leyendo
             // solo `x`, el horizontal solo `y`.
             match state.panel_dragging {
@@ -4062,7 +4128,11 @@ fn build_session_snapshot(state: &Midway) -> crate::session::SessionSnapshot {
         .and_then(|index| state.tabs.get(index))
         .map(|tab| tab.id.clone());
 
-    let open_tabs = state.tabs.iter().map(RequestTabState::to_snapshot).collect();
+    let open_tabs = state
+        .tabs
+        .iter()
+        .map(RequestTabState::to_snapshot)
+        .collect();
 
     let closed_tabs = state.closed_tabs.iter().cloned().collect();
 
@@ -4263,7 +4333,9 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             };
             active_tab.draft.auth = match kind {
                 AuthKind::None => AuthConfig::None,
-                AuthKind::Bearer => AuthConfig::Bearer { token: String::new() },
+                AuthKind::Bearer => AuthConfig::Bearer {
+                    token: String::new(),
+                },
                 AuthKind::Basic => AuthConfig::Basic {
                     username: String::new(),
                     password: String::new(),
@@ -4280,7 +4352,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::Bearer { token: current_token } = &mut active_tab.draft.auth {
+            if let AuthConfig::Bearer {
+                token: current_token,
+            } = &mut active_tab.draft.auth
+            {
                 *current_token = token;
             }
             Task::none()
@@ -4289,7 +4364,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::Basic { username: current_username, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::Basic {
+                username: current_username,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_username = username;
             }
             Task::none()
@@ -4298,7 +4377,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::Basic { password: current_password, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::Basic {
+                password: current_password,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_password = password;
             }
             Task::none()
@@ -4307,7 +4390,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::ApiKey { key: current_key, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::ApiKey {
+                key: current_key, ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_key = key;
             }
             Task::none()
@@ -4316,7 +4402,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::ApiKey { value: current_value, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::ApiKey {
+                value: current_value,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_value = value;
             }
             Task::none()
@@ -4325,7 +4415,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::ApiKey { placement: current_placement, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::ApiKey {
+                placement: current_placement,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_placement = placement;
             }
             Task::none()
@@ -4346,7 +4440,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             });
             Task::none()
         }
-        RequestComposerMessage::KeyValueRowKeyChanged { target, row_id, key } => {
+        RequestComposerMessage::KeyValueRowKeyChanged {
+            target,
+            row_id,
+            key,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -4358,7 +4456,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::KeyValueRowValueChanged { target, row_id, value } => {
+        RequestComposerMessage::KeyValueRowValueChanged {
+            target,
+            row_id,
+            value,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -4436,7 +4538,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionSourceChanged { assertion_id, source } => {
+        RequestComposerMessage::AssertionSourceChanged {
+            assertion_id,
+            source,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -4450,7 +4555,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionOperatorChanged { assertion_id, operator } => {
+        RequestComposerMessage::AssertionOperatorChanged {
+            assertion_id,
+            operator,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -4464,7 +4572,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionSelectorChanged { assertion_id, selector } => {
+        RequestComposerMessage::AssertionSelectorChanged {
+            assertion_id,
+            selector,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -4474,11 +4585,18 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
                 .iter_mut()
                 .find(|assertion| assertion.id == assertion_id)
             {
-                assertion.selector = if selector.trim().is_empty() { None } else { Some(selector) };
+                assertion.selector = if selector.trim().is_empty() {
+                    None
+                } else {
+                    Some(selector)
+                };
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionExpectedChanged { assertion_id, expected } => {
+        RequestComposerMessage::AssertionExpectedChanged {
+            assertion_id,
+            expected,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -4546,7 +4664,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.key = key;
             }
             Task::none()
@@ -4555,7 +4679,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.value = value;
             }
             Task::none()
@@ -4564,7 +4694,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.enabled = !row.enabled;
             }
             Task::none()
@@ -4573,7 +4709,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.kind = kind;
                 // Al cambiar de tipo se descarta el nombre de archivo
                 // previamente asociado (solo aplica a campos File).
@@ -4585,7 +4727,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            active_tab.draft.body.form_data.retain(|row| row.id != row_id);
+            active_tab
+                .draft
+                .body
+                .form_data
+                .retain(|row| row.id != row_id);
             Task::none()
         }
         RequestComposerMessage::UrlPasted(_)
@@ -4683,7 +4829,9 @@ async fn execute_send(
     environment: Option<EnvironmentRecord>,
     execution_id: String,
 ) -> Result<ResponseOutcome, String> {
-    let environment_name = environment.as_ref().map(|environment| environment.name.clone());
+    let environment_name = environment
+        .as_ref()
+        .map(|environment| environment.name.clone());
     let environment_rows = environment
         .as_ref()
         .map(|environment| environment.variables.as_slice())
@@ -4733,14 +4881,23 @@ async fn execute_send(
                 )
                 .await;
 
-            Ok(ResponseOutcome { response, assertions })
+            Ok(ResponseOutcome {
+                response,
+                assertions,
+            })
         }
         Err(error) => {
             let message = error.to_string();
 
             let _ = app_state
                 .repository
-                .append_history(&draft, environment_name, resolved_url, None, Some(message.clone()))
+                .append_history(
+                    &draft,
+                    environment_name,
+                    resolved_url,
+                    None,
+                    Some(message.clone()),
+                )
                 .await;
 
             Err(message)
@@ -4751,7 +4908,11 @@ async fn execute_send(
 /// Aplica el resultado de `SendCompleted` a la tab correspondiente,
 /// identificada por `tab_id` (Tarea 3.18): puede no ser la tab activa si el
 /// usuario cambió de tab mientras la request estaba en curso.
-fn handle_send_completed(state: &mut Midway, tab_id: String, result: Result<ResponseOutcome, String>) {
+fn handle_send_completed(
+    state: &mut Midway,
+    tab_id: String,
+    result: Result<ResponseOutcome, String>,
+) {
     let Some(position) = state.tabs.iter().position(|tab| tab.id == tab_id) else {
         return;
     };
@@ -4846,12 +5007,15 @@ fn handle_settings_pressed(state: &mut Midway, active_index: usize) -> Task<Mess
 
     let app_state = Arc::clone(&state.app_state);
 
-    Task::perform(compute_preview(app_state, draft, environment), move |result| {
-        Message::RequestComposer(RequestComposerMessage::PreviewLoaded {
-            tab_id: tab_id.clone(),
-            result,
-        })
-    })
+    Task::perform(
+        compute_preview(app_state, draft, environment),
+        move |result| {
+            Message::RequestComposer(RequestComposerMessage::PreviewLoaded {
+                tab_id: tab_id.clone(),
+                result,
+            })
+        },
+    )
 }
 
 /// Cuerpo async del cómputo de preview (Tarea 3.20, Requisito 2.18): carga
@@ -4870,7 +5034,9 @@ async fn compute_preview(
     draft: RequestDraft,
     environment: Option<EnvironmentRecord>,
 ) -> Result<RequestPreview, String> {
-    let environment_name = environment.as_ref().map(|environment| environment.name.clone());
+    let environment_name = environment
+        .as_ref()
+        .map(|environment| environment.name.clone());
     let environment_rows = environment
         .as_ref()
         .map(|environment| environment.variables.as_slice())
@@ -4904,7 +5070,11 @@ async fn compute_preview(
 /// Aplica el resultado de `PreviewLoaded` a la tab correspondiente,
 /// identificada por `tab_id` (Tarea 3.20): puede no ser la tab activa si el
 /// usuario cambió de tab mientras el preview se estaba calculando.
-fn handle_preview_loaded(state: &mut Midway, tab_id: String, result: Result<RequestPreview, String>) {
+fn handle_preview_loaded(
+    state: &mut Midway,
+    tab_id: String,
+    result: Result<RequestPreview, String>,
+) {
     let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
         return;
     };
@@ -4975,9 +5145,17 @@ fn handle_url_pasted(state: &mut Midway, pasted_text: String) {
 /// que exista un segundo camino (el shortcut de teclado) que se salte el
 /// aviso.
 fn close_tab_or_prompt_unsaved_changes(state: &mut Midway, tab_id: String) {
-    let is_dirty = state.tabs.iter().find(|tab| tab.id == tab_id).is_some_and(tab_is_dirty);
+    let is_dirty = state
+        .tabs
+        .iter()
+        .find(|tab| tab.id == tab_id)
+        .is_some_and(tab_is_dirty);
     if is_dirty {
-        state.unsaved_changes_prompt = Some(UnsavedChangesPromptState { tab_id, saving: false, error: None });
+        state.unsaved_changes_prompt = Some(UnsavedChangesPromptState {
+            tab_id,
+            saving: false,
+            error: None,
+        });
         return;
     }
     handle_tab_closed(state, &tab_id);
@@ -5058,12 +5236,7 @@ fn saved_request_location(
             .requests
             .iter()
             .find(|request| request.id == request_id)
-            .map(|request| {
-                (
-                    collection.collection.id.clone(),
-                    request.folder_id.clone(),
-                )
-            })
+            .map(|request| (collection.collection.id.clone(), request.folder_id.clone()))
     })
 }
 
@@ -5081,13 +5254,17 @@ fn open_save_request_prompt(state: &mut Midway) {
         .as_ref()
         .map(|(collection_id, _)| collection_id.clone())
         .or_else(|| {
-            state.active_collection_id.as_ref().filter(|active_id| {
-                state
-                    .workspace
-                    .collections
-                    .iter()
-                    .any(|collection| collection.collection.id == **active_id)
-            }).cloned()
+            state
+                .active_collection_id
+                .as_ref()
+                .filter(|active_id| {
+                    state
+                        .workspace
+                        .collections
+                        .iter()
+                        .any(|collection| collection.collection.id == **active_id)
+                })
+                .cloned()
         })
         .or_else(|| {
             state
@@ -5148,7 +5325,10 @@ fn handle_save_request_confirmed(state: &mut Midway) -> Task<Message> {
     };
 
     if folder_id.as_ref().is_some_and(|folder_id| {
-        !collection.folders.iter().any(|folder| folder.id == *folder_id)
+        !collection
+            .folders
+            .iter()
+            .any(|folder| folder.id == *folder_id)
     }) {
         if let Some(prompt) = state.save_request_prompt.as_mut() {
             prompt.error = Some("La carpeta seleccionada ya no existe.".to_string());
@@ -5171,13 +5351,7 @@ fn handle_save_request_confirmed(state: &mut Midway) -> Task<Message> {
 
     let app_state = Arc::clone(&state.app_state);
     Task::perform(
-        persist_request_from_composer(
-            app_state,
-            tab_id,
-            draft,
-            collection_id,
-            folder_id,
-        ),
+        persist_request_from_composer(app_state, tab_id, draft, collection_id, folder_id),
         |result| Message::RequestComposer(RequestComposerMessage::SaveCompleted(result)),
     )
 }
@@ -5214,10 +5388,7 @@ async fn persist_request_from_composer(
     })
 }
 
-fn handle_save_request_completed(
-    state: &mut Midway,
-    result: Result<RequestSaveOutcome, String>,
-) {
+fn handle_save_request_completed(state: &mut Midway, result: Result<RequestSaveOutcome, String>) {
     match result {
         Ok(outcome) => {
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == outcome.tab_id) {
@@ -5225,8 +5396,8 @@ fn handle_save_request_completed(
                 tab.saved_draft = Some(outcome.saved_draft);
             }
 
-            let collection_changed = state.active_collection_id.as_deref()
-                != Some(outcome.collection_id.as_str());
+            let collection_changed =
+                state.active_collection_id.as_deref() != Some(outcome.collection_id.as_str());
             state.workspace = outcome.workspace;
             state.active_collection_id = Some(outcome.collection_id);
             if collection_changed {
@@ -5281,21 +5452,27 @@ fn handle_unsaved_changes_save_requested(state: &mut Midway) -> Task<Message> {
     // contiene ese id de request en el snapshot en memoria, para
     // actualizar el MISMO registro en la MISMA collection en vez de
     // moverlo a la collection de fallback.
-    let existing_collection_id = tab.saved_draft.is_some().then(|| {
-        state.workspace.collections.iter().find_map(|collection| {
-            collection
-                .requests
-                .iter()
-                .find(|request| Some(&request.id) == draft.id.as_ref())
-                .map(|_| collection.collection.id.clone())
+    let existing_collection_id = tab
+        .saved_draft
+        .is_some()
+        .then(|| {
+            state.workspace.collections.iter().find_map(|collection| {
+                collection
+                    .requests
+                    .iter()
+                    .find(|request| Some(&request.id) == draft.id.as_ref())
+                    .map(|_| collection.collection.id.clone())
+            })
         })
-    }).flatten();
+        .flatten();
 
     let app_state = Arc::clone(&state.app_state);
 
     Task::perform(
         persist_tab_draft(app_state, tab_id.clone(), draft, existing_collection_id),
-        move |result| Message::RequestComposer(RequestComposerMessage::UnsavedChangesSaveCompleted(result)),
+        move |result| {
+            Message::RequestComposer(RequestComposerMessage::UnsavedChangesSaveCompleted(result))
+        },
     )
 }
 
@@ -5326,11 +5503,17 @@ async fn persist_tab_draft(
     let collection_id = match existing_collection_id {
         Some(collection_id) => collection_id,
         None => {
-            let snapshot = app_state.repository.export_full_snapshot().await.map_err(|error| error.to_string())?;
+            let snapshot = app_state
+                .repository
+                .export_full_snapshot()
+                .await
+                .map_err(|error| error.to_string())?;
             let existing = snapshot
                 .collections
                 .iter()
-                .find(|collection| collection.collection.name == UNSAVED_CHANGES_DEFAULT_COLLECTION_NAME)
+                .find(|collection| {
+                    collection.collection.name == UNSAVED_CHANGES_DEFAULT_COLLECTION_NAME
+                })
                 .map(|collection| collection.collection.id.clone());
 
             match existing {
@@ -5362,7 +5545,10 @@ async fn persist_tab_draft(
         .await
         .map_err(|error| error.to_string())?;
 
-    Ok(SavedRequestSaveOutcome { tab_id, saved_draft: saved_record.draft })
+    Ok(SavedRequestSaveOutcome {
+        tab_id,
+        saved_draft: saved_record.draft,
+    })
 }
 
 /// Aplica el resultado de `UnsavedChangesSaveCompleted` (Tarea 11.10,
@@ -5370,7 +5556,10 @@ async fn persist_tab_draft(
 /// persistido y cierra la tab (misma lógica que `handle_tab_closed`); en
 /// error, deja el aviso abierto con el mensaje de error visible, sin cerrar
 /// la tab ni mutar `draft`/`saved_draft`.
-fn handle_unsaved_changes_save_completed(state: &mut Midway, result: Result<SavedRequestSaveOutcome, String>) {
+fn handle_unsaved_changes_save_completed(
+    state: &mut Midway,
+    result: Result<SavedRequestSaveOutcome, String>,
+) {
     match result {
         Ok(outcome) => {
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == outcome.tab_id) {
@@ -5492,7 +5681,10 @@ fn update_keyboard(state: &mut Midway, message: KeyboardMessage) -> Task<Message
 /// Actualiza el estado en respuesta a un `ResponseInspectorMessage` (Tarea
 /// 3.9). Por ahora solo cubre el cambio de tab (Body/Headers/Tests); el
 /// contenido de la respuesta se popula en la Tarea 3.18.
-fn update_response_inspector(state: &mut Midway, message: ResponseInspectorMessage) -> Task<Message> {
+fn update_response_inspector(
+    state: &mut Midway,
+    message: ResponseInspectorMessage,
+) -> Task<Message> {
     let Some(active_tab) = state.active_tab.and_then(|index| state.tabs.get_mut(index)) else {
         return Task::none();
     };
@@ -5598,7 +5790,10 @@ fn update_workspace(state: &mut Midway, message: WorkspaceMessage) -> Task<Messa
             handle_environment_saved_result(state, result);
             Task::none()
         }
-        WorkspaceMessage::EnvironmentDeletedResult { environment_id, result } => {
+        WorkspaceMessage::EnvironmentDeletedResult {
+            environment_id,
+            result,
+        } => {
             handle_environment_deleted_result(state, environment_id, result);
             Task::none()
         }
@@ -5676,9 +5871,9 @@ fn validate_environment_name(
         ));
     }
 
-    let is_duplicate = environments.iter().any(|environment| {
-        environment.name == name && Some(environment.id.as_str()) != editing_id
-    });
+    let is_duplicate = environments
+        .iter()
+        .any(|environment| environment.name == name && Some(environment.id.as_str()) != editing_id);
     if is_duplicate {
         return Err(format!("Ya existe un environment llamado \"{name}\"."));
     }
@@ -5791,7 +5986,10 @@ fn handle_environment_saved_result(state: &mut Midway, result: Result<Environmen
 /// asíncrona a `delete_environment`, identificando el environment por
 /// `environment_id` (no por el formulario en curso, que puede estar
 /// editando un environment distinto).
-fn handle_environment_delete_requested(state: &mut Midway, environment_id: String) -> Task<Message> {
+fn handle_environment_delete_requested(
+    state: &mut Midway,
+    environment_id: String,
+) -> Task<Message> {
     state.workspace_panel.environment_busy = true;
 
     let app_state = Arc::clone(&state.app_state);
@@ -5810,7 +6008,10 @@ fn handle_environment_delete_requested(state: &mut Midway, environment_id: Strin
 
 /// Cuerpo async de `delete_environment` (Tarea 7.2): delega directamente en
 /// `infra::sqlite_repository::SqliteRepository::delete_environment`.
-async fn delete_environment(app_state: Arc<AppState>, environment_id: String) -> Result<(), String> {
+async fn delete_environment(
+    app_state: Arc<AppState>,
+    environment_id: String,
+) -> Result<(), String> {
     app_state
         .repository
         .delete_environment(environment_id)
@@ -5826,7 +6027,11 @@ async fn delete_environment(app_state: Arc<AppState>, environment_id: String) ->
 /// (`draft.environment_id`), dejando dicha tab sin environment activo. En
 /// caso de error, lo muestra en `environment_form.error` sin mutar la
 /// lista.
-fn handle_environment_deleted_result(state: &mut Midway, environment_id: String, result: Result<(), String>) {
+fn handle_environment_deleted_result(
+    state: &mut Midway,
+    environment_id: String,
+    result: Result<(), String>,
+) {
     state.workspace_panel.environment_busy = false;
 
     match result {
@@ -5836,7 +6041,9 @@ fn handle_environment_deleted_result(state: &mut Midway, environment_id: String,
                 .environments
                 .retain(|environment| environment.id != environment_id);
 
-            if state.workspace_panel.environment_form.editing_id.as_deref() == Some(environment_id.as_str()) {
+            if state.workspace_panel.environment_form.editing_id.as_deref()
+                == Some(environment_id.as_str())
+            {
                 state.workspace_panel.environment_form = EnvironmentFormState::default();
             }
 
@@ -5921,10 +6128,8 @@ fn handle_workspace_snapshot_loaded(state: &mut Midway, result: Result<Workspace
             // 6.1-6.4): use the current active_collection_id (which may hold
             // the session-restored value) as the session_id hint.
             let session_id = state.active_collection_id.clone();
-            state.active_collection_id = resolve_startup_collection(
-                &state.workspace.collections,
-                session_id.as_deref(),
-            );
+            state.active_collection_id =
+                resolve_startup_collection(&state.workspace.collections, session_id.as_deref());
 
             // Req 6.8: fall back to Debug if active collection was removed.
             enforce_top_bar_mode_after_collection_change(state);
@@ -5955,8 +6160,9 @@ fn handle_export_submitted(state: &mut Midway) -> Task<Message> {
     }
 
     if format == WorkspaceExportFormat::PostmanCollectionV21 && collection_id.is_empty() {
-        state.workspace_panel.export_form.result_message =
-            Some("Para exportar Postman v2.1 necesitás indicar el id de la collection.".to_string());
+        state.workspace_panel.export_form.result_message = Some(
+            "Para exportar Postman v2.1 necesitás indicar el id de la collection.".to_string(),
+        );
         state.workspace_panel.export_form.result_is_error = true;
         return Task::none();
     }
@@ -5965,11 +6171,16 @@ fn handle_export_submitted(state: &mut Midway) -> Task<Message> {
     state.workspace_panel.export_form.result_message = None;
 
     let app_state = Arc::clone(&state.app_state);
-    let collection_id_option = if collection_id.is_empty() { None } else { Some(collection_id) };
+    let collection_id_option = if collection_id.is_empty() {
+        None
+    } else {
+        Some(collection_id)
+    };
 
-    Task::perform(export_workspace_data(app_state, path, format, collection_id_option), |result| {
-        Message::Workspace(WorkspaceMessage::ExportCompleted(result))
-    })
+    Task::perform(
+        export_workspace_data(app_state, path, format, collection_id_option),
+        |result| Message::Workspace(WorkspaceMessage::ExportCompleted(result)),
+    )
 }
 
 /// Cuerpo async de la orquestación de export de la sección Data (Tarea 7.6,
@@ -6000,20 +6211,29 @@ async fn export_workspace_data(
             serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string())?
         }
         WorkspaceExportFormat::PostmanCollectionV21 => {
-            let collection_id = collection_id
-                .ok_or_else(|| "Para exportar Postman v2.1 necesitás elegir una collection.".to_string())?;
+            let collection_id = collection_id.ok_or_else(|| {
+                "Para exportar Postman v2.1 necesitás elegir una collection.".to_string()
+            })?;
             let collection = app_state
                 .repository
                 .get_collection_with_requests(&collection_id)
                 .await
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("No existe la collection {collection_id}"))?;
-            serde_json::to_string_pretty(&export_postman_collection(&collection).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?
+            serde_json::to_string_pretty(
+                &export_postman_collection(&collection).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?
         }
     };
 
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        tokio::fs::create_dir_all(parent).await.map_err(|error| error.to_string())?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     tokio::fs::write(&path, payload.as_bytes())
@@ -6079,9 +6299,10 @@ fn handle_import_submitted(state: &mut Midway) -> Task<Message> {
 
     let app_state = Arc::clone(&state.app_state);
 
-    Task::perform(import_workspace_data(app_state, payload, format), |result| {
-        Message::Workspace(WorkspaceMessage::ImportCompleted(result))
-    })
+    Task::perform(
+        import_workspace_data(app_state, payload, format),
+        |result| Message::Workspace(WorkspaceMessage::ImportCompleted(result)),
+    )
 }
 
 /// Cuerpo async de la orquestación de import de la sección Data (Tarea 7.7,
@@ -6109,7 +6330,8 @@ async fn import_workspace_data(
     requested_format: WorkspaceImportFormat,
 ) -> Result<(WorkspaceSnapshot, String), String> {
     let payload = parse_json_or_yaml_payload(&payload_text).map_err(|error| error.to_string())?;
-    let detected_format = detect_import_format(&payload, requested_format).map_err(|error| error.to_string())?;
+    let detected_format =
+        detect_import_format(&payload, requested_format).map_err(|error| error.to_string())?;
 
     let existing_snapshot = app_state
         .repository
@@ -6117,26 +6339,34 @@ async fn import_workspace_data(
         .await
         .map_err(|error| error.to_string())?;
 
-    let mut existing_environment_names: HashSet<String> =
-        existing_snapshot.environments.iter().map(|environment| environment.name.clone()).collect();
+    let mut existing_environment_names: HashSet<String> = existing_snapshot
+        .environments
+        .iter()
+        .map(|environment| environment.name.clone())
+        .collect();
     let mut existing_request_names: HashSet<String> = existing_snapshot
         .collections
         .iter()
         .flat_map(|collection| collection.requests.iter())
         .map(|request| request.name.clone())
         .collect();
-    let mut existing_collection_names: HashSet<String> =
-        existing_snapshot.collections.iter().map(|collection| collection.collection.name.clone()).collect();
+    let mut existing_collection_names: HashSet<String> = existing_snapshot
+        .collections
+        .iter()
+        .map(|collection| collection.collection.name.clone())
+        .collect();
 
     let message = match detected_format {
         WorkspaceImportFormat::NativeWorkspaceV1 => {
-            let bundle: NativeWorkspaceBundle = parse_native_bundle(payload).map_err(|error| error.to_string())?;
+            let bundle: NativeWorkspaceBundle =
+                parse_native_bundle(payload).map_err(|error| error.to_string())?;
             let mut requests_imported = 0_u64;
             let mut environments_imported = 0_u64;
             let collections_imported = bundle.snapshot.collections.len() as u64;
 
             for mut environment in bundle.snapshot.environments {
-                environment.name = unique_name_against(&existing_environment_names, &environment.name);
+                environment.name =
+                    unique_name_against(&existing_environment_names, &environment.name);
                 existing_environment_names.insert(environment.name.clone());
                 app_state
                     .repository
@@ -6151,7 +6381,8 @@ async fn import_workspace_data(
             }
 
             for collection in bundle.snapshot.collections {
-                let collection_name = unique_name_against(&existing_collection_names, &collection.collection.name);
+                let collection_name =
+                    unique_name_against(&existing_collection_names, &collection.collection.name);
                 existing_collection_names.insert(collection_name.clone());
                 let created_collection = app_state
                     .repository
@@ -6197,10 +6428,14 @@ async fn import_workspace_data(
         }
         WorkspaceImportFormat::OpenApiV3 => {
             let parsed = import_openapi_document(&payload).map_err(|error| error.to_string())?;
-            let imported_requests = parsed.requests.into_iter().map(|draft| ImportedRequest {
-                draft,
-                folder_id: None,
-            }).collect();
+            let imported_requests = parsed
+                .requests
+                .into_iter()
+                .map(|draft| ImportedRequest {
+                    draft,
+                    folder_id: None,
+                })
+                .collect();
             import_http_collection(
                 &app_state,
                 parsed.collection_name,
@@ -6285,7 +6520,10 @@ async fn import_http_collection(
     let environments_imported = if variables.is_empty() {
         0
     } else {
-        let environment_name = unique_name_against(existing_environment_names, &format!("{} vars", collection.name));
+        let environment_name = unique_name_against(
+            existing_environment_names,
+            &format!("{} vars", collection.name),
+        );
         existing_environment_names.insert(environment_name.clone());
         app_state
             .repository
@@ -6333,7 +6571,10 @@ fn unique_name_against(existing_names: &HashSet<String>, candidate: &str) -> Str
 /// formulario; en caso de error, muestra el mensaje de error en
 /// `import_form.result_message` sin mutar `state.workspace` (Requisito
 /// 4.5: "sin modificar el estado de datos existente").
-fn handle_import_completed(state: &mut Midway, result: Result<(WorkspaceSnapshot, String), String>) {
+fn handle_import_completed(
+    state: &mut Midway,
+    result: Result<(WorkspaceSnapshot, String), String>,
+) {
     state.workspace_panel.import_form.busy = false;
 
     match result {
@@ -6366,7 +6607,9 @@ mod import_name_collision_tests {
     /// existente, así que se devuelve exactamente igual, sin sufijo.
     #[test]
     fn unique_name_against_returns_candidate_unchanged_when_no_collision() {
-        let existing: HashSet<String> = ["Alpha".to_string(), "Beta".to_string()].into_iter().collect();
+        let existing: HashSet<String> = ["Alpha".to_string(), "Beta".to_string()]
+            .into_iter()
+            .collect();
 
         assert_eq!(unique_name_against(&existing, "Gamma"), "Gamma");
     }
@@ -6417,17 +6660,13 @@ pub fn main_content_pane<'a>(
     window_height: f32,
 ) -> Element<'a, Message> {
     // Top_Bar: breadcrumb + mode tabs + theme toggle (Tarea 12.1).
-    let top_bar = guarded_view("TopBar", || {
-        crate::ui::top_bar::view(state, &ds)
-    });
+    let top_bar = guarded_view("TopBar", || crate::ui::top_bar::view(state, &ds));
 
     let body: Element<'a, Message> = if crate::ui::onboarding::should_show_onboarding(state) {
         // Onboarding view: shown instead of Composer/Inspector when there
         // are no collections and the focus is RequestTab (Requirements 1.1,
         // 1.2, 1.4).
-        guarded_view("Onboarding", || {
-            crate::ui::onboarding::view(&ds)
-        })
+        guarded_view("Onboarding", || crate::ui::onboarding::view(&ds))
     } else {
         match state.main_content_focus {
             MainContentFocus::RequestTab => {
@@ -6938,8 +7177,14 @@ mod debug_layout_tests {
         assert_eq!(debug_pane_layout(-1.0), DebugPaneLayout::Stacked);
         assert_eq!(debug_pane_layout(f32::MIN), DebugPaneLayout::Stacked);
         assert_eq!(debug_pane_layout(f32::MAX), DebugPaneLayout::SideBySide);
-        assert_eq!(debug_pane_layout(f32::INFINITY), DebugPaneLayout::SideBySide);
-        assert_eq!(debug_pane_layout(f32::NEG_INFINITY), DebugPaneLayout::Stacked);
+        assert_eq!(
+            debug_pane_layout(f32::INFINITY),
+            DebugPaneLayout::SideBySide
+        );
+        assert_eq!(
+            debug_pane_layout(f32::NEG_INFINITY),
+            DebugPaneLayout::Stacked
+        );
         // `NaN >= x` es falso, así que el baseline cae en la rama `else`.
         assert_eq!(debug_pane_layout(f32::NAN), DebugPaneLayout::Stacked);
     }
@@ -7206,7 +7451,9 @@ pub fn view(state: &Midway) -> Element<'_, Message> {
         let tree_pane = container(guarded_view("RequestTreePane", || {
             crate::ui::request_tree_pane::view(state, &ds)
         }))
-        .width(Length::Fixed(state.session.panel_sizes.workspace_panel_width))
+        .width(Length::Fixed(
+            state.session.panel_sizes.workspace_panel_width,
+        ))
         .height(Length::Fill);
 
         // Divider árbol/contenido: hitbox de 10 px y línea acentuada centrada.
@@ -7273,7 +7520,11 @@ pub fn view(state: &Midway) -> Element<'_, Message> {
 /// progreso del Collection_Runner está implementada; autosave y teclado
 /// global se agregan en la Fase 5.
 pub fn subscription(state: &Midway) -> Subscription<Message> {
-    let runner_subscription = match state.runner.as_ref().and_then(|runner| runner.running.clone()) {
+    let runner_subscription = match state
+        .runner
+        .as_ref()
+        .and_then(|runner| runner.running.clone())
+    {
         Some(handle) => Subscription::run_with(handle, collection_runner_progress_stream),
         None => Subscription::none(),
     };
@@ -7283,8 +7534,8 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     // exigido entre una modificación y su persistencia, cubriendo el peor
     // caso (una modificación ocurre justo después de un tick) sin
     // acercarse al límite.
-    let autosave_subscription =
-        iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Session(SessionMessage::AutosaveTick));
+    let autosave_subscription = iced::time::every(std::time::Duration::from_secs(1))
+        .map(|_| Message::Session(SessionMessage::AutosaveTick));
 
     // Shortcut Ctrl/Cmd+K para abrir/cerrar el Command Palette (Tarea 11.2,
     // Requisito 6.1). `Modifiers::COMMAND` es Ctrl en Windows/Linux y Cmd
@@ -7295,12 +7546,16 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     // de la tabla de shortcuts globales, que la Tarea 11.12 agrega por
     // separado sin tener que tocar este filtro.
     let palette_shortcut_subscription = iced::keyboard::listen().filter_map(|event| match event {
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => match key.as_ref() {
-            iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("k") => {
-                Some(Message::Palette(PaletteMessage::Toggled))
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("k") =>
+                {
+                    Some(Message::Palette(PaletteMessage::Toggled))
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         _ => None,
     });
 
@@ -7331,52 +7586,76 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     // resuelve contra el estado vigente en el momento en que el mensaje
     // llega a `update`, en vez de en la subscription.
     let global_shortcut_subscription = iced::keyboard::listen().filter_map(|event| match event {
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() && modifiers.shift() => {
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. }
+            if modifiers.command() && modifiers.shift() =>
+        {
             match key.as_ref() {
-                iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("n") => {
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("n") =>
+                {
                     Some(Message::Keyboard(KeyboardMessage::NewBlankTabRequested))
                 }
-                iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("p") => {
-                    Some(Message::RequestComposer(RequestComposerMessage::SettingsPressed))
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("p") =>
+                {
+                    Some(Message::RequestComposer(
+                        RequestComposerMessage::SettingsPressed,
+                    ))
                 }
-                iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("t") => {
-                    Some(Message::RequestComposer(RequestComposerMessage::ClosedTabReopened))
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("t") =>
+                {
+                    Some(Message::RequestComposer(
+                        RequestComposerMessage::ClosedTabReopened,
+                    ))
                 }
                 _ => None,
             }
         }
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => match key.as_ref() {
-            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => {
-                Some(Message::RequestComposer(RequestComposerMessage::SendPressed))
-            }
-            iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("s") => {
-                Some(Message::Keyboard(KeyboardMessage::SaveRequested))
-            }
-            iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("w") => {
-                Some(Message::Keyboard(KeyboardMessage::CloseActiveTabShortcut))
-            }
-            iced::keyboard::Key::Character(character) if character == "." => {
-                Some(Message::Workspace(WorkspaceMessage::ToggleCollapsed))
-            }
-            _ => None,
-        },
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.alt() => match key.as_ref() {
-            iced::keyboard::Key::Character(character) => {
-                let digit = character.parse::<usize>().ok()?;
-                if (1..=9).contains(&digit) {
-                    Some(Message::Keyboard(KeyboardMessage::GoToTabShortcut { index: digit - 1 }))
-                } else {
-                    None
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => Some(
+                    Message::RequestComposer(RequestComposerMessage::SendPressed),
+                ),
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("s") =>
+                {
+                    Some(Message::Keyboard(KeyboardMessage::SaveRequested))
                 }
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("w") =>
+                {
+                    Some(Message::Keyboard(KeyboardMessage::CloseActiveTabShortcut))
+                }
+                iced::keyboard::Key::Character(character) if character == "." => {
+                    Some(Message::Workspace(WorkspaceMessage::ToggleCollapsed))
+                }
+                _ => None,
             }
-            _ => None,
-        },
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.is_empty() => match key.as_ref() {
-            iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
-                Some(Message::Keyboard(KeyboardMessage::EscapePressed))
+        }
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.alt() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Character(character) => {
+                    let digit = character.parse::<usize>().ok()?;
+                    if (1..=9).contains(&digit) {
+                        Some(Message::Keyboard(KeyboardMessage::GoToTabShortcut {
+                            index: digit - 1,
+                        }))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.is_empty() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
+                    Some(Message::Keyboard(KeyboardMessage::EscapePressed))
+                }
+                _ => None,
+            }
+        }
         _ => None,
     });
 
@@ -7388,17 +7667,15 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     });
     // El handle del request puede soltarse fuera de su fila o del árbol;
     // escuchamos la liberación global para completar/cancelar el drop.
-    let request_drop_subscription = iced::event::listen_with(|event, _status, _id| {
-        match event {
-            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
-                iced::mouse::Button::Left,
-            )) => Some(Message::Tree(TreeMessage::RequestDragReleased)),
-            iced::Event::Mouse(iced::mouse::Event::CursorLeft)
-            | iced::Event::Window(iced::window::Event::Unfocused) => {
-                Some(Message::Tree(TreeMessage::RequestDragCancelled))
-            }
-            _ => None,
+    let request_drop_subscription = iced::event::listen_with(|event, _status, _id| match event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+            Some(Message::Tree(TreeMessage::RequestDragReleased))
         }
+        iced::Event::Mouse(iced::mouse::Event::CursorLeft)
+        | iced::Event::Window(iced::window::Event::Unfocused) => {
+            Some(Message::Tree(TreeMessage::RequestDragCancelled))
+        }
+        _ => None,
     });
 
     Subscription::batch([
@@ -7436,7 +7713,9 @@ fn panel_resize_message_for_event(event: &iced::Event) -> Option<PanelResizeMess
 /// el mismo `handle` (mismo hash para `Subscription::run_with`, ver
 /// `ProgressReceiverHandle`); en ese caso se devuelve un stream vacío para
 /// no reconstruir un consumidor duplicado del mismo canal.
-fn collection_runner_progress_stream(handle: &ProgressReceiverHandle) -> BoxStream<'static, Message> {
+fn collection_runner_progress_stream(
+    handle: &ProgressReceiverHandle,
+) -> BoxStream<'static, Message> {
     match handle.take() {
         Some(receiver) => receiver
             .map(|event| Message::Runner(RunnerMessage::ProgressReceived(event)))
@@ -8246,7 +8525,9 @@ mod tests {
     fn empty_auth_config_for(kind: AuthKind) -> AuthConfig {
         match kind {
             AuthKind::None => AuthConfig::None,
-            AuthKind::Bearer => AuthConfig::Bearer { token: String::new() },
+            AuthKind::Bearer => AuthConfig::Bearer {
+                token: String::new(),
+            },
             AuthKind::Basic => AuthConfig::Basic {
                 username: String::new(),
                 password: String::new(),
@@ -8695,7 +8976,10 @@ mod tests {
     #[test]
     fn eviction_preserves_response_metadata_and_original_size() {
         let body = "x".repeat(4096);
-        let mut tabs = vec![tab_with_response_body(&body), tab_with_response_body("otro")];
+        let mut tabs = vec![
+            tab_with_response_body(&body),
+            tab_with_response_body("otro"),
+        ];
 
         evict_inactive_response_bodies(&mut tabs, 1);
 
@@ -9691,16 +9975,18 @@ mod tests {
             proptest::bool::ANY,
             prop::collection::hash_set(2usize..=12usize, 0..=6),
         )
-            .prop_map(|(candidate, unrelated_names, candidate_present, used_suffixes)| {
-                let mut existing_names = unrelated_names;
-                if candidate_present {
-                    existing_names.insert(candidate.clone());
-                }
-                for suffix in used_suffixes {
-                    existing_names.insert(format!("{candidate} ({suffix})"));
-                }
-                (existing_names, candidate)
-            })
+            .prop_map(
+                |(candidate, unrelated_names, candidate_present, used_suffixes)| {
+                    let mut existing_names = unrelated_names;
+                    if candidate_present {
+                        existing_names.insert(candidate.clone());
+                    }
+                    for suffix in used_suffixes {
+                        existing_names.insert(format!("{candidate} ({suffix})"));
+                    }
+                    (existing_names, candidate)
+                },
+            )
     }
 
     proptest! {
@@ -9865,9 +10151,12 @@ mod tests {
     /// que contiene un único `SavedRequestRecord`, usado por los tests de
     /// `build_palette_items`/`execute_palette_item` que necesitan un
     /// request guardado navegable desde el palette.
-    fn workspace_snapshot_with_one_saved_request() -> (midway_core::domain::workspace::WorkspaceSnapshot, String) {
+    fn workspace_snapshot_with_one_saved_request(
+    ) -> (midway_core::domain::workspace::WorkspaceSnapshot, String) {
         use midway_core::domain::http::RequestBodyDraft;
-        use midway_core::domain::workspace::{CollectionSummary, CollectionWithRequests, SavedRequestRecord};
+        use midway_core::domain::workspace::{
+            CollectionSummary, CollectionWithRequests, SavedRequestRecord,
+        };
 
         let request_id = "request-1".to_string();
         let draft = RequestDraft {
@@ -9878,7 +10167,11 @@ mod tests {
             query: Vec::new(),
             headers: Vec::new(),
             auth: AuthConfig::None,
-            body: RequestBodyDraft { mode: BodyMode::None, value: String::new(), form_data: Vec::new() },
+            body: RequestBodyDraft {
+                mode: BodyMode::None,
+                value: String::new(),
+                form_data: Vec::new(),
+            },
             timeout_ms: 30_000,
             environment_id: None,
             response_tests: Vec::new(),
@@ -9948,13 +10241,18 @@ mod tests {
         let mut midway = build_test_midway(create_blank_draft());
         midway.palette.is_open = true;
 
-        let _ = update_palette(&mut midway, PaletteMessage::QueryChanged("nuevo".to_string()));
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::QueryChanged("nuevo".to_string()),
+        );
         assert_eq!(midway.palette.query, "nuevo");
 
         let items = build_palette_items(&midway);
         let results = command_palette::search_palette_items(&items, &midway.palette.query, 14);
         assert!(
-            results.iter().any(|item| item.id == PALETTE_ACTION_NEW_REQUEST),
+            results
+                .iter()
+                .any(|item| item.id == PALETTE_ACTION_NEW_REQUEST),
             "la acción fija 'Nuevo request' debe calzar con la query 'nuevo'"
         );
     }
@@ -9969,8 +10267,12 @@ mod tests {
         midway.palette.query = "nuevo".to_string();
         let tabs_before = midway.tabs.len();
 
-        let _ =
-            update_palette(&mut midway, PaletteMessage::ItemSelected { item_id: PALETTE_ACTION_NEW_REQUEST.to_string() });
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::ItemSelected {
+                item_id: PALETTE_ACTION_NEW_REQUEST.to_string(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), tabs_before + 1);
         assert_eq!(midway.active_tab, Some(midway.tabs.len() - 1));
@@ -9988,15 +10290,28 @@ mod tests {
         midway.workspace = snapshot;
         midway.palette.is_open = true;
 
-        let _ = update_palette(&mut midway, PaletteMessage::ItemSelected { item_id: format!("request:{request_id}") });
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::ItemSelected {
+                item_id: format!("request:{request_id}"),
+            },
+        );
 
         assert!(!midway.palette.is_open);
         assert!(midway.palette.query.is_empty());
 
-        let active_index = midway.active_tab.expect("debe haber una tab activa tras abrir el request");
+        let active_index = midway
+            .active_tab
+            .expect("debe haber una tab activa tras abrir el request");
         let active_tab = &midway.tabs[active_index];
         assert_eq!(active_tab.draft.url, "https://api.ejemplo.com/users/1");
-        assert_eq!(active_tab.saved_draft.as_ref().and_then(|draft| draft.id.clone()), Some(request_id));
+        assert_eq!(
+            active_tab
+                .saved_draft
+                .as_ref()
+                .and_then(|draft| draft.id.clone()),
+            Some(request_id)
+        );
     }
 
     /// Reabrir el mismo request guardado dos veces reutiliza la tab ya
@@ -10017,10 +10332,17 @@ mod tests {
 
         open_saved_request_in_tab(&mut midway, &request_id);
 
-        assert_eq!(midway.tabs.len(), tabs_after_first_open + 1, "no debe crear una segunda tab para el mismo request");
+        assert_eq!(
+            midway.tabs.len(),
+            tabs_after_first_open + 1,
+            "no debe crear una segunda tab para el mismo request"
+        );
         let active_index = midway.active_tab.expect("debe haber una tab activa");
         assert_eq!(
-            midway.tabs[active_index].saved_draft.as_ref().and_then(|draft| draft.id.clone()),
+            midway.tabs[active_index]
+                .saved_draft
+                .as_ref()
+                .and_then(|draft| draft.id.clone()),
             Some(request_id)
         );
     }
@@ -10052,7 +10374,12 @@ mod tests {
         let tabs_before = midway.tabs.len();
         let active_tab_before = midway.active_tab;
 
-        let _ = update_palette(&mut midway, PaletteMessage::ItemSelected { item_id: "request:no-existe".to_string() });
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::ItemSelected {
+                item_id: "request:no-existe".to_string(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), tabs_before);
         assert_eq!(midway.active_tab, active_tab_before);
@@ -10088,13 +10415,21 @@ mod tests {
         midway.tabs.push(RequestTabState::blank());
         midway.active_tab = Some(1);
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: closed_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: closed_id.clone(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), 1, "la tab cerrada debe salir de `tabs`");
         assert!(!midway.tabs.iter().any(|tab| tab.id == closed_id));
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, closed_id);
-        assert!(midway.session.dirty, "cerrar una tab debe marcar la sesión como dirty");
+        assert!(
+            midway.session.dirty,
+            "cerrar una tab debe marcar la sesión como dirty"
+        );
     }
 
     /// Cerrar más de `CLOSED_TABS_LIMIT` (20) tabs mantiene el stack
@@ -10116,7 +10451,8 @@ mod tests {
             let tab_id = midway.tabs[0].id.clone();
             closed_ids_in_order.push(tab_id.clone());
             midway.active_tab = Some(0);
-            let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id });
+            let _ =
+                update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id });
         }
 
         assert_eq!(midway.closed_tabs.len(), crate::session::CLOSED_TABS_LIMIT);
@@ -10126,14 +10462,24 @@ mod tests {
         // deben haber sido descartados, ya que se cerraron 25 tabs con un
         // límite de 20).
         let most_recently_closed = closed_ids_in_order.last().unwrap();
-        assert_eq!(&midway.closed_tabs.front().unwrap().id, most_recently_closed);
+        assert_eq!(
+            &midway.closed_tabs.front().unwrap().id,
+            most_recently_closed
+        );
 
-        let expected_oldest_surviving = &closed_ids_in_order[closed_ids_in_order.len() - crate::session::CLOSED_TABS_LIMIT];
-        assert_eq!(&midway.closed_tabs.back().unwrap().id, expected_oldest_surviving);
+        let expected_oldest_surviving =
+            &closed_ids_in_order[closed_ids_in_order.len() - crate::session::CLOSED_TABS_LIMIT];
+        assert_eq!(
+            &midway.closed_tabs.back().unwrap().id,
+            expected_oldest_surviving
+        );
 
         for discarded_id in &closed_ids_in_order[..5] {
             assert!(
-                !midway.closed_tabs.iter().any(|snapshot| &snapshot.id == discarded_id),
+                !midway
+                    .closed_tabs
+                    .iter()
+                    .any(|snapshot| &snapshot.id == discarded_id),
                 "los primeros cierres deben haber sido descartados del stack acotado"
             );
         }
@@ -10149,7 +10495,9 @@ mod tests {
         midway.active_tab = Some(1);
         let _ = update_request_composer(
             &mut midway,
-            RequestComposerMessage::TabClosed { tab_id: tab_id_to_close.clone() },
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id_to_close.clone(),
+            },
         );
         let tabs_before_reopen = midway.tabs.len();
 
@@ -10157,7 +10505,9 @@ mod tests {
 
         assert_eq!(midway.tabs.len(), tabs_before_reopen + 1);
         assert!(midway.closed_tabs.is_empty());
-        let active_index = midway.active_tab.expect("debe haber una tab activa tras reabrir");
+        let active_index = midway
+            .active_tab
+            .expect("debe haber una tab activa tras reabrir");
         assert_eq!(active_index, midway.tabs.len() - 1);
         assert_eq!(midway.tabs[active_index].id, tab_id_to_close);
     }
@@ -10189,21 +10539,44 @@ mod tests {
         let tab_b_id = midway.tabs[1].id.clone();
 
         midway.active_tab = Some(0);
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_a_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_a_id.clone(),
+            },
+        );
         // Tras cerrar A, la única tab restante (B) queda activa en el
         // índice 0.
         midway.active_tab = Some(0);
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_b_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_b_id.clone(),
+            },
+        );
 
         assert_eq!(midway.closed_tabs.len(), 2);
-        assert_eq!(midway.closed_tabs.front().unwrap().id, tab_b_id, "B se cerró más recientemente que A");
+        assert_eq!(
+            midway.closed_tabs.front().unwrap().id,
+            tab_b_id,
+            "B se cerró más recientemente que A"
+        );
 
         let _ = update_request_composer(&mut midway, RequestComposerMessage::ClosedTabReopened);
 
-        let active_index = midway.active_tab.expect("debe haber una tab activa tras reabrir");
-        assert_eq!(midway.tabs[active_index].id, tab_b_id, "reabrir debe traer B, no A");
+        let active_index = midway
+            .active_tab
+            .expect("debe haber una tab activa tras reabrir");
+        assert_eq!(
+            midway.tabs[active_index].id, tab_b_id,
+            "reabrir debe traer B, no A"
+        );
         assert_eq!(midway.closed_tabs.len(), 1);
-        assert_eq!(midway.closed_tabs.front().unwrap().id, tab_a_id, "A sigue en el stack");
+        assert_eq!(
+            midway.closed_tabs.front().unwrap().id,
+            tab_a_id,
+            "A sigue en el stack"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -10373,11 +10746,26 @@ mod tests {
         let mut midway = build_test_midway(draft);
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
-        assert_eq!(midway.tabs.len(), 1, "la tab dirty no debe cerrarse todavía");
-        assert!(midway.closed_tabs.is_empty(), "no debe empujarse al stack de tabs cerradas todavía");
-        let prompt = midway.unsaved_changes_prompt.as_ref().expect("debe mostrarse el aviso de unsaved changes");
+        assert_eq!(
+            midway.tabs.len(),
+            1,
+            "la tab dirty no debe cerrarse todavía"
+        );
+        assert!(
+            midway.closed_tabs.is_empty(),
+            "no debe empujarse al stack de tabs cerradas todavía"
+        );
+        let prompt = midway
+            .unsaved_changes_prompt
+            .as_ref()
+            .expect("debe mostrarse el aviso de unsaved changes");
         assert_eq!(prompt.tab_id, tab_id);
         assert!(!prompt.saving);
         assert!(prompt.error.is_none());
@@ -10392,12 +10780,23 @@ mod tests {
         let mut midway = build_test_midway(create_blank_draft());
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
-        assert!(midway.tabs.is_empty(), "la tab limpia debe cerrarse de inmediato");
+        assert!(
+            midway.tabs.is_empty(),
+            "la tab limpia debe cerrarse de inmediato"
+        );
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, tab_id);
-        assert!(midway.unsaved_changes_prompt.is_none(), "no debe mostrarse ningún aviso para una tab limpia");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "no debe mostrarse ningún aviso para una tab limpia"
+        );
     }
 
     /// Una tab con `saved_draft: Some(...)` cuyo draft actual es
@@ -10411,7 +10810,12 @@ mod tests {
         midway.tabs[0].saved_draft = Some(saved);
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
         assert!(midway.tabs.is_empty());
         assert!(midway.unsaved_changes_prompt.is_none());
@@ -10429,7 +10833,12 @@ mod tests {
         midway.tabs[0].draft.url = "https://example.com/edited-after-save".to_string();
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), 1);
         assert!(midway.unsaved_changes_prompt.is_some());
@@ -10443,16 +10852,36 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft.clone());
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        assert!(midway.unsaved_changes_prompt.is_some(), "precondición: el aviso debe estar abierto");
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        assert!(
+            midway.unsaved_changes_prompt.is_some(),
+            "precondición: el aviso debe estar abierto"
+        );
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::UnsavedChangesCancelRequested);
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::UnsavedChangesCancelRequested,
+        );
 
-        assert!(midway.unsaved_changes_prompt.is_none(), "Cancelar debe descartar el aviso");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "Cancelar debe descartar el aviso"
+        );
         assert_eq!(midway.tabs.len(), 1, "Cancelar no debe cerrar la tab");
         assert_eq!(midway.tabs[0].id, tab_id);
-        assert_eq!(midway.tabs[0].draft, draft, "Cancelar no debe mutar el draft");
-        assert!(midway.tabs[0].saved_draft.is_none(), "Cancelar no debe mutar saved_draft");
+        assert_eq!(
+            midway.tabs[0].draft, draft,
+            "Cancelar no debe mutar el draft"
+        );
+        assert!(
+            midway.tabs[0].saved_draft.is_none(),
+            "Cancelar no debe mutar saved_draft"
+        );
     }
 
     /// "Descartar" cierra la tab de inmediato (misma lógica que
@@ -10466,12 +10895,26 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft);
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        assert!(midway.unsaved_changes_prompt.is_some(), "precondición: el aviso debe estar abierto");
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        assert!(
+            midway.unsaved_changes_prompt.is_some(),
+            "precondición: el aviso debe estar abierto"
+        );
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::UnsavedChangesDiscardRequested);
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::UnsavedChangesDiscardRequested,
+        );
 
-        assert!(midway.unsaved_changes_prompt.is_none(), "Descartar debe cerrar el aviso");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "Descartar debe cerrar el aviso"
+        );
         assert!(midway.tabs.is_empty(), "Descartar debe cerrar la tab");
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, tab_id);
@@ -10495,8 +10938,16 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft);
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        assert!(midway.unsaved_changes_prompt.is_some(), "precondición: el aviso debe estar abierto");
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        assert!(
+            midway.unsaved_changes_prompt.is_some(),
+            "precondición: el aviso debe estar abierto"
+        );
 
         let mut persisted_draft = midway.tabs[0].draft.clone();
         persisted_draft.id = Some("assigned-by-save-request".to_string());
@@ -10509,7 +10960,10 @@ mod tests {
             })),
         );
 
-        assert!(midway.unsaved_changes_prompt.is_none(), "Guardar exitoso debe descartar el aviso");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "Guardar exitoso debe descartar el aviso"
+        );
         assert!(midway.tabs.is_empty(), "Guardar exitoso debe cerrar la tab");
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, tab_id);
@@ -10524,21 +10978,47 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft.clone());
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::UnsavedChangesSaveRequested);
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::UnsavedChangesSaveRequested,
+        );
 
         let _ = update_request_composer(
             &mut midway,
-            RequestComposerMessage::UnsavedChangesSaveCompleted(Err("fallo simulado de guardado".to_string())),
+            RequestComposerMessage::UnsavedChangesSaveCompleted(Err(
+                "fallo simulado de guardado".to_string()
+            )),
         );
 
-        assert_eq!(midway.tabs.len(), 1, "un error de Guardar no debe cerrar la tab");
-        assert_eq!(midway.tabs[0].draft, draft, "un error de Guardar no debe mutar el draft");
-        assert!(midway.tabs[0].saved_draft.is_none(), "un error de Guardar no debe mutar saved_draft");
-        let prompt = midway.unsaved_changes_prompt.as_ref().expect("el aviso debe permanecer abierto tras un error");
+        assert_eq!(
+            midway.tabs.len(),
+            1,
+            "un error de Guardar no debe cerrar la tab"
+        );
+        assert_eq!(
+            midway.tabs[0].draft, draft,
+            "un error de Guardar no debe mutar el draft"
+        );
+        assert!(
+            midway.tabs[0].saved_draft.is_none(),
+            "un error de Guardar no debe mutar saved_draft"
+        );
+        let prompt = midway
+            .unsaved_changes_prompt
+            .as_ref()
+            .expect("el aviso debe permanecer abierto tras un error");
         assert_eq!(prompt.tab_id, tab_id);
         assert!(!prompt.saving, "saving debe volver a false tras el error");
-        assert!(prompt.error.is_some(), "debe quedar visible el mensaje de error");
+        assert!(
+            prompt.error.is_some(),
+            "debe quedar visible el mensaje de error"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -10745,7 +11225,10 @@ mod tests {
 
         let _ = update_request_composer(&mut midway, RequestComposerMessage::SendPressed);
 
-        assert!(midway.tabs[0].sending, "Ctrl+Enter debe disparar el envío de la tab activa");
+        assert!(
+            midway.tabs[0].sending,
+            "Ctrl+Enter debe disparar el envío de la tab activa"
+        );
         assert!(midway.tabs[0].execution_id.is_some());
     }
 
@@ -10764,7 +11247,10 @@ mod tests {
 
         let _ = update_request_composer(&mut midway, RequestComposerMessage::SettingsPressed);
 
-        assert!(midway.tabs[0].preview.is_none(), "Ctrl+Shift+P debe cerrar el preview ya abierto");
+        assert!(
+            midway.tabs[0].preview.is_none(),
+            "Ctrl+Shift+P debe cerrar el preview ya abierto"
+        );
     }
 
     /// Ctrl+. ("Tools/Workspace"): despacha
@@ -10776,10 +11262,16 @@ mod tests {
         assert!(!midway.workspace_panel.collapsed);
 
         let _ = update_workspace(&mut midway, WorkspaceMessage::ToggleCollapsed);
-        assert!(midway.workspace_panel.collapsed, "Ctrl+. debe colapsar el panel cuando estaba expandido");
+        assert!(
+            midway.workspace_panel.collapsed,
+            "Ctrl+. debe colapsar el panel cuando estaba expandido"
+        );
 
         let _ = update_workspace(&mut midway, WorkspaceMessage::ToggleCollapsed);
-        assert!(!midway.workspace_panel.collapsed, "una segunda pulsación debe expandirlo de nuevo");
+        assert!(
+            !midway.workspace_panel.collapsed,
+            "una segunda pulsación debe expandirlo de nuevo"
+        );
     }
 
     /// Ctrl+S abre el mismo diálogo de guardado que el botón del composer.
@@ -10962,7 +11454,10 @@ mod tests {
 
         assert_eq!(midway.tabs.len(), tabs_before + 1);
         assert_eq!(midway.active_tab, Some(midway.tabs.len() - 1));
-        assert!(midway.session.dirty, "abrir una tab nueva debe marcar la sesión como dirty");
+        assert!(
+            midway.session.dirty,
+            "abrir una tab nueva debe marcar la sesión como dirty"
+        );
     }
 
     /// Ctrl+W ("Cerrar tab activa"): cierra la tab activa (identificada en
@@ -11052,9 +11547,15 @@ mod tests {
 
         let _ = update_keyboard(&mut midway, KeyboardMessage::EscapePressed);
 
-        assert!(!midway.palette.is_open, "Esc debe cerrar el palette primero");
+        assert!(
+            !midway.palette.is_open,
+            "Esc debe cerrar el palette primero"
+        );
         assert!(midway.palette.query.is_empty());
-        assert!(midway.tabs[0].preview.is_some(), "el preview no debe cerrarse en esta pulsación de Esc");
+        assert!(
+            midway.tabs[0].preview.is_some(),
+            "el preview no debe cerrarse en esta pulsación de Esc"
+        );
     }
 
     /// Esc con el palette cerrado pero el preview de la tab activa
@@ -11068,7 +11569,10 @@ mod tests {
 
         let _ = update_keyboard(&mut midway, KeyboardMessage::EscapePressed);
 
-        assert!(midway.tabs[0].preview.is_none(), "Esc debe cerrar el preview cuando el palette está cerrado");
+        assert!(
+            midway.tabs[0].preview.is_none(),
+            "Esc debe cerrar el preview cuando el palette está cerrado"
+        );
     }
 
     /// Esc sin ningún overlay abierto (ni palette ni preview) es un
@@ -11497,11 +12001,8 @@ mod tests {
             parent_folder_id: None,
             name: "Conservar".to_string(),
         };
-        let deleted_request = crud_saved_request(
-            "request-deleted",
-            "collection-a",
-            Some("folder-deleted"),
-        );
+        let deleted_request =
+            crud_saved_request("request-deleted", "collection-a", Some("folder-deleted"));
         let surviving_request = crud_saved_request("request-keep", "collection-a", None);
 
         let mut state = build_test_midway(create_blank_draft());
@@ -11532,10 +12033,10 @@ mod tests {
             saving: false,
             error: None,
         });
-        state.tree.collapsed.extend([
-            "folder-deleted".to_string(),
-            "folder-keep".to_string(),
-        ]);
+        state
+            .tree
+            .collapsed
+            .extend(["folder-deleted".to_string(), "folder-keep".to_string()]);
         state.tree.collapsed_snapshot = Some(state.tree.collapsed.clone());
         state.workspace_crud_dialog = Some(WorkspaceCrudDialogState {
             kind: WorkspaceCrudKind::DeleteFolder {
@@ -11559,16 +12060,21 @@ mod tests {
         };
         reconcile_workspace_after_crud(&mut state, new_workspace);
 
-        assert!(state.tabs.iter().all(|tab| {
-            tab.draft.id.as_deref() != Some("request-deleted")
-        }));
-        assert!(state.closed_tabs.iter().all(|tab| {
-            tab.draft.id.as_deref() != Some("request-deleted")
-        }));
+        assert!(state
+            .tabs
+            .iter()
+            .all(|tab| { tab.draft.id.as_deref() != Some("request-deleted") }));
+        assert!(state
+            .closed_tabs
+            .iter()
+            .all(|tab| { tab.draft.id.as_deref() != Some("request-deleted") }));
         assert!(state.save_request_prompt.is_none());
         assert!(state.unsaved_changes_prompt.is_none());
         assert_eq!(state.active_collection_id.as_deref(), Some("collection-a"));
-        assert_eq!(state.tree.collapsed, HashSet::from(["folder-keep".to_string()]));
+        assert_eq!(
+            state.tree.collapsed,
+            HashSet::from(["folder-keep".to_string()])
+        );
         assert_eq!(
             state.tree.collapsed_snapshot,
             Some(HashSet::from(["folder-keep".to_string()]))
@@ -11626,8 +12132,8 @@ mod error_boundary_tests {
     //! tocar el data dir real como interferencia entre tests (el override
     //! es por hilo, y cada `#[test]` de Rust corre en su propio hilo).
 
-    use super::*;
     use super::tests::build_test_midway;
+    use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::TestCaseError;
 
@@ -11698,9 +12204,14 @@ mod error_boundary_tests {
             assert_eq!(records_after.len(), records_before.len() + 1);
 
             let new_record = &records_after[0];
-            assert_eq!(new_record.source, diagnostics::CrashSource::ComponentBoundary);
+            assert_eq!(
+                new_record.source,
+                diagnostics::CrashSource::ComponentBoundary
+            );
             assert!(
-                new_record.message.contains("panic de prueba en guarded_update"),
+                new_record
+                    .message
+                    .contains("panic de prueba en guarded_update"),
                 "el mensaje del CrashRecord debe incluir el mensaje del panic capturado, fue: {}",
                 new_record.message
             );
@@ -11720,7 +12231,8 @@ mod error_boundary_tests {
         with_temp_diagnostics_path(|| {
             let records_before = diagnostics::read_crash_records().len();
 
-            let _element: Element<'static, Message> = guarded_view("TestComponent", || text("contenido normal").into());
+            let _element: Element<'static, Message> =
+                guarded_view("TestComponent", || text("contenido normal").into());
 
             assert_eq!(diagnostics::read_crash_records().len(), records_before);
         });
@@ -11743,9 +12255,14 @@ mod error_boundary_tests {
             assert_eq!(records_after.len(), records_before.len() + 1);
 
             let new_record = &records_after[0];
-            assert_eq!(new_record.source, diagnostics::CrashSource::ComponentBoundary);
+            assert_eq!(
+                new_record.source,
+                diagnostics::CrashSource::ComponentBoundary
+            );
             assert!(
-                new_record.message.contains("panic de prueba en guarded_view"),
+                new_record
+                    .message
+                    .contains("panic de prueba en guarded_view"),
                 "el mensaje del CrashRecord debe incluir el mensaje del panic capturado, fue: {}",
                 new_record.message
             );
@@ -11984,20 +12501,20 @@ mod navigation_toggle_preserves_composer_state_tests {
     //! Validates: Requirements 4.1, 4.2, 8.3
 
     use super::*;
+    use crate::curl::create_blank_draft;
+    use crate::state::AppState;
+    use midway_core::domain::cookies::CookieJarHandle;
     use midway_core::infra::sqlite_repository::SqliteRepository;
     use midway_core::runtime::request_executor::RequestExecutorHandle;
     use midway_core::runtime::secret_executor::SecretExecutorHandle;
-    use midway_core::domain::cookies::CookieJarHandle;
-    use crate::state::AppState;
-    use crate::curl::create_blank_draft;
     use proptest::prelude::*;
     use std::collections::VecDeque;
     use std::sync::Arc;
 
     /// Build a minimal AppState for testing (opens a temp SQLite DB).
     fn build_test_app_state() -> AppState {
-        let temp_file = tempfile::NamedTempFile::new()
-            .expect("failed to create temp file for test AppState");
+        let temp_file =
+            tempfile::NamedTempFile::new().expect("failed to create temp file for test AppState");
         let db_path = temp_file.path().to_path_buf();
 
         let runtime = tokio::runtime::Runtime::new()
@@ -12210,20 +12727,20 @@ mod collection_selection_workspace_property_tests {
     //! Validates: Requirements 4.3
 
     use super::*;
+    use crate::state::AppState;
+    use midway_core::domain::cookies::CookieJarHandle;
     use midway_core::domain::workspace::{CollectionSummary, CollectionWithRequests};
     use midway_core::infra::sqlite_repository::SqliteRepository;
     use midway_core::runtime::request_executor::RequestExecutorHandle;
     use midway_core::runtime::secret_executor::SecretExecutorHandle;
-    use midway_core::domain::cookies::CookieJarHandle;
-    use crate::state::AppState;
     use proptest::prelude::*;
     use std::collections::VecDeque;
     use std::sync::Arc;
 
     /// Build a minimal AppState for testing (opens a temp SQLite DB).
     fn build_test_app_state() -> AppState {
-        let temp_file = tempfile::NamedTempFile::new()
-            .expect("failed to create temp file for test AppState");
+        let temp_file =
+            tempfile::NamedTempFile::new().expect("failed to create temp file for test AppState");
         let db_path = temp_file.path().to_path_buf();
 
         let runtime = tokio::runtime::Runtime::new()
@@ -12263,7 +12780,9 @@ mod collection_selection_workspace_property_tests {
                 history: Vec::new(),
                 secrets: Vec::new(),
             },
-            tabs: vec![RequestTabState::from_draft(crate::curl::create_blank_draft())],
+            tabs: vec![RequestTabState::from_draft(
+                crate::curl::create_blank_draft(),
+            )],
             active_tab: Some(0),
             closed_tabs: VecDeque::new(),
             workspace_panel: WorkspacePanelState::default(),
@@ -12550,15 +13069,20 @@ mod session_restore_property_tests {
     /// dejaría de hablar de preservación para hablar de aritmética de
     /// punto flotante.
     fn arb_panel_sizes() -> impl Strategy<Value = crate::session::PanelSizes> {
-        (-1_000.0f32..5_000.0f32, -1_000.0f32..5_000.0f32, -1_000.0f32..5_000.0f32).prop_map(
-            |(workspace_panel_width, response_panel_height, request_panel_width)| {
-                crate::session::PanelSizes {
-                    workspace_panel_width,
-                    response_panel_height,
-                    request_panel_width,
-                }
-            },
+        (
+            -1_000.0f32..5_000.0f32,
+            -1_000.0f32..5_000.0f32,
+            -1_000.0f32..5_000.0f32,
         )
+            .prop_map(
+                |(workspace_panel_width, response_panel_height, request_panel_width)| {
+                    crate::session::PanelSizes {
+                        workspace_panel_width,
+                        response_panel_height,
+                        request_panel_width,
+                    }
+                },
+            )
     }
 
     fn arb_request_tab() -> impl Strategy<Value = RequestTab> {

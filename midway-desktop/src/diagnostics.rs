@@ -92,7 +92,9 @@ pub fn diagnostics_file_path() -> AppResult<PathBuf> {
     }
 
     let data_dir = dirs::data_dir()
-        .ok_or_else(|| AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string()))?
+        .ok_or_else(|| {
+            AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string())
+        })?
         .join(APP_NAME);
 
     Ok(data_dir.join(DIAGNOSTICS_FILE_NAME))
@@ -166,7 +168,11 @@ pub(crate) fn read_crash_records_at(path: &PathBuf) -> Vec<CrashRecord> {
 /// comportamiento que el `try/catch` alrededor de `localStorage.setItem`
 /// en `appendCrashRecord`), y el registro construido se devuelve en
 /// cualquier caso, incluso si la persistencia falló.
-pub fn append_crash_record(source: CrashSource, message: String, stack: Option<String>) -> CrashRecord {
+pub fn append_crash_record(
+    source: CrashSource,
+    message: String,
+    stack: Option<String>,
+) -> CrashRecord {
     let Ok(path) = diagnostics_file_path() else {
         // Sin data dir resoluble no hay dónde persistir; se devuelve el
         // registro construido en memoria de todos modos (best-effort, ver
@@ -187,7 +193,12 @@ pub fn append_crash_record(source: CrashSource, message: String, stack: Option<S
 /// tanto por la API pública como por los tests unitarios (con una ruta
 /// dentro de un directorio temporal). Visibilidad `pub(crate)`: ver nota de
 /// [`read_crash_records_at`].
-pub(crate) fn append_crash_record_at(path: &PathBuf, source: CrashSource, message: String, stack: Option<String>) -> CrashRecord {
+pub(crate) fn append_crash_record_at(
+    path: &PathBuf,
+    source: CrashSource,
+    message: String,
+    stack: Option<String>,
+) -> CrashRecord {
     let record = CrashRecord {
         id: uuid::Uuid::new_v4().to_string(),
         source,
@@ -231,7 +242,8 @@ fn write_crash_records_at(path: &PathBuf, records: &[CrashRecord]) -> AppResult<
         std::fs::create_dir_all(parent).map_err(|error| AppError::Io(error.to_string()))?;
     }
 
-    let serialized = serde_json::to_string(records).map_err(|error| AppError::Serialization(error.to_string()))?;
+    let serialized = serde_json::to_string(records)
+        .map_err(|error| AppError::Serialization(error.to_string()))?;
 
     std::fs::write(path, serialized).map_err(|error| AppError::Io(error.to_string()))
 }
@@ -314,7 +326,10 @@ mod tests {
 
         let at_capacity = read_crash_records_at(&path);
         assert_eq!(at_capacity.len(), MAX_CRASH_RECORDS);
-        assert_eq!(at_capacity[0].message, format!("error {}", MAX_CRASH_RECORDS - 1));
+        assert_eq!(
+            at_capacity[0].message,
+            format!("error {}", MAX_CRASH_RECORDS - 1)
+        );
         assert_eq!(at_capacity[at_capacity.len() - 1].id, oldest);
 
         // Un registro adicional debe desalojar el más antiguo y seguir

@@ -15,7 +15,8 @@ use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
 use iced::{font, Border, Color, Element, Font, Length};
 
 use midway_core::domain::http::{
-    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow, RequestPreview,
+    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow,
+    RequestPreview,
 };
 use midway_core::domain::testing::{AssertionOperator, AssertionSource, ResponseAssertion};
 
@@ -109,14 +110,15 @@ pub fn toolbar<'a>(
     // --- URL bar: method pill + url input + send pill ---
     let m_color = method_color(draft.method);
     let m_text_color = contrast_text_color(m_color);
-    let method_picker = pick_list(
-        HttpMethod::ALL,
-        Some(draft.method),
-        |method| Message::RequestComposer(RequestComposerMessage::MethodChanged(method)),
-    )
+    let method_picker = pick_list(HttpMethod::ALL, Some(draft.method), |method| {
+        Message::RequestComposer(RequestComposerMessage::MethodChanged(method))
+    })
     .placeholder("GET")
     .text_size(body.size)
-    .font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+    .font(font_for(&TextStyle {
+        weight: iced::font::Weight::Bold,
+        ..body
+    }))
     .style(move |theme, status| {
         let mut style = pick_list::default(theme, status);
         style.border = Border {
@@ -147,7 +149,10 @@ pub fn toolbar<'a>(
     let send_button_content = if active_tab.sending {
         text("Enviando…").size(body.size).font(body_font)
     } else {
-        text("Enviar").size(body.size).font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+        text("Enviar").size(body.size).font(font_for(&TextStyle {
+            weight: iced::font::Weight::Bold,
+            ..body
+        }))
     };
 
     let sending = active_tab.sending;
@@ -161,7 +166,10 @@ pub fn toolbar<'a>(
                 accent
             };
             let txt = if sending {
-                Color { a: 0.6, ..send_text_color }
+                Color {
+                    a: 0.6,
+                    ..send_text_color
+                }
             } else {
                 send_text_color
             };
@@ -178,7 +186,9 @@ pub fn toolbar<'a>(
     let send_button = if active_tab.sending {
         send_button
     } else {
-        send_button.on_press(Message::RequestComposer(RequestComposerMessage::SendPressed))
+        send_button.on_press(Message::RequestComposer(
+            RequestComposerMessage::SendPressed,
+        ))
     };
 
     let saved = active_tab
@@ -188,17 +198,25 @@ pub fn toolbar<'a>(
     let save_label = if saved { "Guardado" } else { "Guardar" };
     let save_button = button(text(save_label).size(body.size).font(body_font))
         .padding([ds.spacing.sm, ds.spacing.md])
-        .on_press(Message::RequestComposer(RequestComposerMessage::SaveRequested));
+        .on_press(Message::RequestComposer(
+            RequestComposerMessage::SaveRequested,
+        ));
 
     // Environment + settings on the right
     let environment_options: Vec<EnvironmentOption> = std::iter::once(EnvironmentOption {
         id: None,
         name: SIN_ENVIRONMENT_LABEL.to_string(),
     })
-    .chain(state.workspace.environments.iter().map(|environment| EnvironmentOption {
-        id: Some(environment.id.clone()),
-        name: environment.name.clone(),
-    }))
+    .chain(
+        state
+            .workspace
+            .environments
+            .iter()
+            .map(|environment| EnvironmentOption {
+                id: Some(environment.id.clone()),
+                name: environment.name.clone(),
+            }),
+    )
     .collect();
 
     let selected_environment = environment_options
@@ -227,7 +245,9 @@ pub fn toolbar<'a>(
 
     let settings_button = button(text("⚙").size(body.size).font(body_font))
         .padding(ds.spacing.sm)
-        .on_press(Message::RequestComposer(RequestComposerMessage::SettingsPressed));
+        .on_press(Message::RequestComposer(
+            RequestComposerMessage::SettingsPressed,
+        ));
 
     let url_bar = row![method_picker, url_input, send_button]
         .spacing(ds.spacing.sm)
@@ -366,7 +386,12 @@ pub enum AuthKind {
 }
 
 impl AuthKind {
-    const ALL: [AuthKind; 4] = [AuthKind::None, AuthKind::Bearer, AuthKind::Basic, AuthKind::ApiKey];
+    const ALL: [AuthKind; 4] = [
+        AuthKind::None,
+        AuthKind::Bearer,
+        AuthKind::Basic,
+        AuthKind::ApiKey,
+    ];
 
     /// Deriva el `AuthKind` correspondiente a la variante actual de
     /// `AuthConfig`, para preseleccionar el `pick_list`.
@@ -437,31 +462,43 @@ fn auth_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
         AuthConfig::None => content,
         AuthConfig::Bearer { token } => content.push(
             text_input("Token", token)
-                .on_input(|token| Message::RequestComposer(RequestComposerMessage::BearerTokenChanged(token)))
+                .on_input(|token| {
+                    Message::RequestComposer(RequestComposerMessage::BearerTokenChanged(token))
+                })
                 .width(Length::Fill),
         ),
         AuthConfig::Basic { username, password } => content
             .push(
                 text_input("Usuario", username)
                     .on_input(|username| {
-                        Message::RequestComposer(RequestComposerMessage::BasicUsernameChanged(username))
+                        Message::RequestComposer(RequestComposerMessage::BasicUsernameChanged(
+                            username,
+                        ))
                     })
                     .width(Length::Fill),
             )
             .push(
                 text_input("Contraseña", password)
                     .on_input(|password| {
-                        Message::RequestComposer(RequestComposerMessage::BasicPasswordChanged(password))
+                        Message::RequestComposer(RequestComposerMessage::BasicPasswordChanged(
+                            password,
+                        ))
                     })
                     .secure(true)
                     .width(Length::Fill),
             ),
-        AuthConfig::ApiKey { key, value, placement } => {
+        AuthConfig::ApiKey {
+            key,
+            value,
+            placement,
+        } => {
             let placement_picker = pick_list(
                 API_KEY_PLACEMENT_OPTIONS,
                 Some(ApiKeyPlacementOption(*placement)),
                 |option: ApiKeyPlacementOption| {
-                    Message::RequestComposer(RequestComposerMessage::ApiKeyPlacementChanged(option.0))
+                    Message::RequestComposer(RequestComposerMessage::ApiKeyPlacementChanged(
+                        option.0,
+                    ))
                 },
             )
             .placeholder("Ubicación");
@@ -469,13 +506,17 @@ fn auth_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
             content
                 .push(
                     text_input("Nombre de la clave", key)
-                        .on_input(|key| Message::RequestComposer(RequestComposerMessage::ApiKeyKeyChanged(key)))
+                        .on_input(|key| {
+                            Message::RequestComposer(RequestComposerMessage::ApiKeyKeyChanged(key))
+                        })
                         .width(Length::Fill),
                 )
                 .push(
                     text_input("Valor", value)
                         .on_input(|value| {
-                            Message::RequestComposer(RequestComposerMessage::ApiKeyValueChanged(value))
+                            Message::RequestComposer(RequestComposerMessage::ApiKeyValueChanged(
+                                value,
+                            ))
                         })
                         .width(Length::Fill),
                 )
@@ -547,11 +588,13 @@ fn key_value_editor(rows: &[KeyValueRow], target: KeyValueTarget) -> Element<'_,
             },
         ));
 
-        content = content.push(row![enabled_checkbox, key_input, value_input, remove_button].spacing(8));
+        content =
+            content.push(row![enabled_checkbox, key_input, value_input, remove_button].spacing(8));
     }
 
-    let add_button = button(text("+ Agregar fila"))
-        .on_press(Message::RequestComposer(RequestComposerMessage::KeyValueRowAdded(target)));
+    let add_button = button(text("+ Agregar fila")).on_press(Message::RequestComposer(
+        RequestComposerMessage::KeyValueRowAdded(target),
+    ));
 
     content = content.push(add_button);
 
@@ -625,7 +668,9 @@ fn body_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
     let mode_picker = pick_list(
         BODY_MODE_OPTIONS,
         Some(BodyModeOption(active_tab.draft.body.mode)),
-        |option: BodyModeOption| Message::RequestComposer(RequestComposerMessage::BodyModeChanged(option.0)),
+        |option: BodyModeOption| {
+            Message::RequestComposer(RequestComposerMessage::BodyModeChanged(option.0))
+        },
     )
     .placeholder("Modo de body");
 
@@ -638,7 +683,9 @@ fn body_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
                 .body_editor
                 .view()
                 .height(Length::Fixed(BODY_TEXT_EDITOR_HEIGHT))
-                .on_action(|action| Message::RequestComposer(RequestComposerMessage::BodyTextAction(action)));
+                .on_action(|action| {
+                    Message::RequestComposer(RequestComposerMessage::BodyTextAction(action))
+                });
             content.push(editor)
         }
         BodyMode::FormData => content.push(form_data_editor(&active_tab.draft.body.form_data)),
@@ -708,12 +755,20 @@ fn form_data_editor(rows: &[FormDataRow]) -> Element<'_, Message> {
         ));
 
         content = content.push(
-            row![enabled_checkbox, key_input, kind_picker, value_input, remove_button].spacing(8),
+            row![
+                enabled_checkbox,
+                key_input,
+                kind_picker,
+                value_input,
+                remove_button
+            ]
+            .spacing(8),
         );
     }
 
-    let add_button =
-        button(text("+ Agregar campo")).on_press(Message::RequestComposer(RequestComposerMessage::FormDataRowAdded));
+    let add_button = button(text("+ Agregar campo")).on_press(Message::RequestComposer(
+        RequestComposerMessage::FormDataRowAdded,
+    ));
 
     content = content.push(add_button);
 
@@ -846,14 +901,17 @@ fn tests_tab_editor(assertions: &[ResponseAssertion]) -> Element<'_, Message> {
         )
         .placeholder("Operador");
 
-        let selector_input = text_input("Selector (opcional)", &assertion.selector.clone().unwrap_or_default())
-            .on_input(move |selector| {
-                Message::RequestComposer(RequestComposerMessage::AssertionSelectorChanged {
-                    assertion_id: id_for_selector.clone(),
-                    selector,
-                })
+        let selector_input = text_input(
+            "Selector (opcional)",
+            &assertion.selector.clone().unwrap_or_default(),
+        )
+        .on_input(move |selector| {
+            Message::RequestComposer(RequestComposerMessage::AssertionSelectorChanged {
+                assertion_id: id_for_selector.clone(),
+                selector,
             })
-            .width(Length::Fill);
+        })
+        .width(Length::Fill);
 
         let expected_input = text_input("Valor esperado", &assertion.expected)
             .on_input(move |expected| {
@@ -884,8 +942,9 @@ fn tests_tab_editor(assertions: &[ResponseAssertion]) -> Element<'_, Message> {
         );
     }
 
-    let add_button = button(text("+ Agregar assertion"))
-        .on_press(Message::RequestComposer(RequestComposerMessage::AssertionAdded));
+    let add_button = button(text("+ Agregar assertion")).on_press(Message::RequestComposer(
+        RequestComposerMessage::AssertionAdded,
+    ));
 
     content = content.push(add_button);
 
@@ -932,15 +991,27 @@ mod presentation_tests {
 
     #[test]
     fn matching_method_prefix_is_not_repeated_in_the_title() {
-        assert_eq!(display_request_name("POST posts 1", HttpMethod::POST), "posts 1");
-        assert_eq!(display_request_name("post   posts 1", HttpMethod::POST), "posts 1");
+        assert_eq!(
+            display_request_name("POST posts 1", HttpMethod::POST),
+            "posts 1"
+        );
+        assert_eq!(
+            display_request_name("post   posts 1", HttpMethod::POST),
+            "posts 1"
+        );
     }
 
     #[test]
     fn meaningful_or_different_prefix_is_preserved() {
         assert_eq!(display_request_name("POST", HttpMethod::POST), "POST");
-        assert_eq!(display_request_name("GET posts 1", HttpMethod::POST), "GET posts 1");
-        assert_eq!(display_request_name("Public posts", HttpMethod::POST), "Public posts");
+        assert_eq!(
+            display_request_name("GET posts 1", HttpMethod::POST),
+            "GET posts 1"
+        );
+        assert_eq!(
+            display_request_name("Public posts", HttpMethod::POST),
+            "Public posts"
+        );
     }
 
     #[test]
@@ -1083,11 +1154,7 @@ mod language_tests {
             .map(ToString::to_string)
             .chain(API_KEY_PLACEMENT_OPTIONS.iter().map(ToString::to_string))
             .chain(BODY_MODE_OPTIONS.iter().map(ToString::to_string))
-            .chain(
-                FORM_DATA_FIELD_KIND_OPTIONS
-                    .iter()
-                    .map(ToString::to_string),
-            )
+            .chain(FORM_DATA_FIELD_KIND_OPTIONS.iter().map(ToString::to_string))
             .chain(ASSERTION_SOURCE_OPTIONS.iter().map(ToString::to_string))
             .chain(ASSERTION_OPERATOR_OPTIONS.iter().map(ToString::to_string))
             .chain(std::iter::once(SIN_ENVIRONMENT_LABEL.to_string()))

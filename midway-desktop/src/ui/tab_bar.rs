@@ -14,7 +14,11 @@ use crate::ui::design_system::DesignSystem;
 /// descartarlos desperdicia trabajo (y en la tab Body del
 /// `Response_Inspector`, el shaping del payload completo).
 pub fn tabs<'a, Message, TabId, F>(
-    entries: Vec<(TabId, &'static str, Box<dyn FnOnce() -> Element<'a, Message> + 'a>)>,
+    entries: Vec<(
+        TabId,
+        &'static str,
+        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
+    )>,
     active: &TabId,
     on_select: F,
     ds: &DesignSystem,
@@ -37,8 +41,16 @@ where
 
     for (id, label) in &labels {
         let is_active = id == active;
-        let tab_color = if is_active { text_primary } else { text_secondary };
-        let weight = if is_active { font::Weight::Bold } else { font::Weight::Normal };
+        let tab_color = if is_active {
+            text_primary
+        } else {
+            text_secondary
+        };
+        let weight = if is_active {
+            font::Weight::Bold
+        } else {
+            font::Weight::Normal
+        };
 
         let tab_font = Font {
             family: font::Family::SansSerif,
@@ -47,20 +59,15 @@ where
         };
 
         let id_clone = id.clone();
-        let tab_btn = button(
-            text(*label)
-                .size(body.size)
-                .font(tab_font)
-                .color(tab_color),
-        )
-        .padding([ds.spacing.xs, ds.spacing.sm])
-        .style(move |_theme, _status| button::Style {
-            background: None,
-            text_color: tab_color,
-            border: Border::default(),
-            ..button::Style::default()
-        })
-        .on_press(on_select(id_clone));
+        let tab_btn = button(text(*label).size(body.size).font(tab_font).color(tab_color))
+            .padding([ds.spacing.xs, ds.spacing.sm])
+            .style(move |_theme, _status| button::Style {
+                background: None,
+                text_color: tab_color,
+                border: Border::default(),
+                ..button::Style::default()
+            })
+            .on_press(on_select(id_clone));
 
         tabs_row = tabs_row.push(tab_btn);
     }

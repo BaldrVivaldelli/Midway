@@ -263,7 +263,9 @@ pub fn update_tree(state: &mut Midway, message: TreeMessage) -> iced::Task<Messa
             // Reuse/open the persisted request, then expose its name/location editor.
             let _ = handle_request_opened(state, request_id);
             if state.tree.error.is_none() {
-                iced::Task::done(Message::RequestComposer(RequestComposerMessage::SaveRequested))
+                iced::Task::done(Message::RequestComposer(
+                    RequestComposerMessage::SaveRequested,
+                ))
             } else {
                 iced::Task::none()
             }
@@ -283,10 +285,14 @@ pub fn update_tree(state: &mut Midway, message: TreeMessage) -> iced::Task<Messa
                         .find(|collection| collection.collection.id == collection_id)
                 })
                 .is_some_and(|collection| {
-                    collection.requests.iter().any(|request| request.id == request_id)
+                    collection
+                        .requests
+                        .iter()
+                        .any(|request| request.id == request_id)
                 });
             if !exists {
-                state.tree.error = Some("No se pudo iniciar el movimiento del request.".to_string());
+                state.tree.error =
+                    Some("No se pudo iniciar el movimiento del request.".to_string());
                 return iced::Task::none();
             }
 
@@ -317,7 +323,10 @@ pub fn update_tree(state: &mut Midway, message: TreeMessage) -> iced::Task<Messa
                             .find(|collection| collection.collection.id == collection_id)
                     })
                     .is_some_and(|collection| {
-                        collection.folders.iter().any(|folder| folder.id == *folder_id)
+                        collection
+                            .folders
+                            .iter()
+                            .any(|folder| folder.id == *folder_id)
                     }),
             };
             if valid {
@@ -421,12 +430,7 @@ fn handle_request_opened(state: &mut Midway, request_id: String) -> iced::Task<M
                 .iter()
                 .find(|c| c.collection.id == *collection_id)
         })
-        .and_then(|collection| {
-            collection
-                .requests
-                .iter()
-                .find(|r| r.id == request_id)
-        })
+        .and_then(|collection| collection.requests.iter().find(|r| r.id == request_id))
         .cloned();
 
     let Some(record) = request_record else {
@@ -449,9 +453,7 @@ fn handle_request_opened(state: &mut Midway, request_id: String) -> iced::Task<M
 
     // Check if there's an empty tab to reuse (same as existing behavior)
     let empty_tab_index = state.tabs.iter().position(|tab| {
-        tab.draft.url.trim().is_empty()
-            && tab.saved_draft.is_none()
-            && !tab.sending
+        tab.draft.url.trim().is_empty() && tab.saved_draft.is_none() && !tab.sending
     });
 
     if let Some(index) = empty_tab_index {
@@ -568,7 +570,9 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
                 },
                 ..button::Style::default()
             })
-            .on_press(Message::ActivityBar(ActivityBarMessage::CreateCollectionPressed));
+            .on_press(Message::ActivityBar(
+                ActivityBarMessage::CreateCollectionPressed,
+            ));
 
             let content = column![message, create_button]
                 .spacing(ds.spacing.md)
@@ -610,48 +614,37 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
                 .font(secondary_font)
                 .color(ds.palette.text_secondary);
 
-            let create_request_button = button(
-                text("+ Request")
-                    .size(secondary.size)
-                    .font(secondary_font),
-            )
-            .on_press(Message::Tree(TreeMessage::CreateFirstRequestPressed));
-            let create_folder_button = button(
-                text("+ Carpeta")
-                    .size(secondary.size)
-                    .font(secondary_font),
-            )
-            .on_press(Message::WorkspaceCrud(
-                WorkspaceCrudMessage::CreateFolderRequested {
-                    parent_folder_id: None,
-                },
-            ));
-            let rename_collection_button = button(text("Renombrar").size(secondary.size)).on_press(
-                Message::WorkspaceCrud(WorkspaceCrudMessage::RenameCollectionRequested(
-                    collection_id.clone(),
-                )),
-            );
-            let delete_collection_button = button(text("Borrar").size(secondary.size)).on_press(
-                Message::WorkspaceCrud(WorkspaceCrudMessage::DeleteCollectionRequested(
-                    collection_id,
-                )),
-            );
+            let create_request_button =
+                button(text("+ Request").size(secondary.size).font(secondary_font))
+                    .on_press(Message::Tree(TreeMessage::CreateFirstRequestPressed));
+            let create_folder_button =
+                button(text("+ Carpeta").size(secondary.size).font(secondary_font)).on_press(
+                    Message::WorkspaceCrud(WorkspaceCrudMessage::CreateFolderRequested {
+                        parent_folder_id: None,
+                    }),
+                );
+            let rename_collection_button =
+                button(text("Renombrar").size(secondary.size)).on_press(Message::WorkspaceCrud(
+                    WorkspaceCrudMessage::RenameCollectionRequested(collection_id.clone()),
+                ));
+            let delete_collection_button =
+                button(text("Borrar").size(secondary.size)).on_press(Message::WorkspaceCrud(
+                    WorkspaceCrudMessage::DeleteCollectionRequested(collection_id),
+                ));
 
             let content = column![
                 text(collection_name)
                     .size(ds.typography.subtitle.size)
                     .font(body_font)
                     .color(ds.palette.text_primary),
-                row![rename_collection_button, delete_collection_button]
-                    .spacing(ds.spacing.xs),
+                row![rename_collection_button, delete_collection_button].spacing(ds.spacing.xs),
                 empty_message,
                 import_hint,
-                row![create_request_button, create_folder_button]
-                    .spacing(ds.spacing.xs),
+                row![create_request_button, create_folder_button].spacing(ds.spacing.xs),
             ]
-                .spacing(ds.spacing.sm)
-                .padding(ds.spacing.md)
-                .width(Length::Fill);
+            .spacing(ds.spacing.sm)
+            .padding(ds.spacing.md)
+            .width(Length::Fill);
 
             pane_shell(content.into(), ds)
         }
@@ -678,7 +671,10 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
             .find(|c| c.collection.id == *id)
     });
     let (folders, requests) = match active_collection {
-        Some(collection) => (collection.folders.as_slice(), collection.requests.as_slice()),
+        Some(collection) => (
+            collection.folders.as_slice(),
+            collection.requests.as_slice(),
+        ),
         None => (&[] as &[Folder], &[] as &[SavedRequestRecord]),
     };
 
@@ -716,12 +712,10 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
         .map(str::to_string);
     let content: Element<'_, Message> = if filter_active && filtered_tree.is_none() {
         // "No results" empty state (Req 5.10, takes precedence over empty collection)
-        column![
-            text("No se encontraron resultados para el filtro.")
-                .size(body.size)
-                .font(body_font)
-                .color(ds.palette.text_secondary),
-        ]
+        column![text("No se encontraron resultados para el filtro.")
+            .size(body.size)
+            .font(body_font)
+            .color(ds.palette.text_secondary),]
         .spacing(ds.spacing.sm)
         .padding(ds.spacing.md)
         .width(Length::Fill)
@@ -731,7 +725,12 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
         let mut tree_column = column![].spacing(ds.spacing.xs);
         for item in render_items {
             match item {
-                RenderItem::Folder { id, name, collapsed, depth } => {
+                RenderItem::Folder {
+                    id,
+                    name,
+                    collapsed,
+                    depth,
+                } => {
                     let indent = (depth as f32) * ds.spacing.lg;
                     let toggle_icon = if collapsed { "▸" } else { "▾" };
 
@@ -752,9 +751,13 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
                     .width(Length::Fill)
                     .padding([ds.spacing.xs, ds.spacing.sm])
                     .style(|_theme, _status| button::Style::default())
-                    .on_press_maybe(state.tree.request_drag.is_none().then(|| {
-                        Message::Tree(TreeMessage::FolderToggled(id.clone()))
-                    }));
+                    .on_press_maybe(
+                        state
+                            .tree
+                            .request_drag
+                            .is_none()
+                            .then(|| Message::Tree(TreeMessage::FolderToggled(id.clone()))),
+                    );
                     let folder_hovered = state.tree.hovered_item.as_ref()
                         == Some(&TreeHoveredItem::Folder(id.clone()));
                     let folder_actions: Element<'_, Message> = if folder_hovered
@@ -798,9 +801,9 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
                             .into()
                     };
                     let folder_row = row![folder_button, folder_actions]
-                    .spacing(ds.spacing.xs)
-                    .width(Length::Fill)
-                    .align_y(iced::alignment::Vertical::Center);
+                        .spacing(ds.spacing.xs)
+                        .width(Length::Fill)
+                        .align_y(iced::alignment::Vertical::Center);
 
                     let folder_target = RequestDropTarget::Folder(id.clone());
                     let is_drop_target = state
@@ -818,21 +821,22 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
                     };
                     let drop_accent = ds.palette.accent;
                     let drop_radius = ds.radius.control;
-                    let folder_surface = container(folder_row)
-                        .width(Length::Fill)
-                        .style(move |_theme| container::Style {
-                            background: drop_background.map(Into::into),
-                            border: Border {
-                                color: if is_drop_target {
-                                    drop_accent
-                                } else {
-                                    iced::Color::TRANSPARENT
+                    let folder_surface =
+                        container(folder_row)
+                            .width(Length::Fill)
+                            .style(move |_theme| container::Style {
+                                background: drop_background.map(Into::into),
+                                border: Border {
+                                    color: if is_drop_target {
+                                        drop_accent
+                                    } else {
+                                        iced::Color::TRANSPARENT
+                                    },
+                                    width: if is_drop_target { 1.0 } else { 0.0 },
+                                    radius: drop_radius.into(),
                                 },
-                                width: if is_drop_target { 1.0 } else { 0.0 },
-                                radius: drop_radius.into(),
-                            },
-                            ..container::Style::default()
-                        });
+                                ..container::Style::default()
+                            });
                     let folder_drop_area = mouse_area(folder_surface)
                         .on_enter(Message::Tree(TreeMessage::RequestDropTargetEntered(
                             folder_target.clone(),
@@ -846,16 +850,20 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
                             iced::mouse::Interaction::None
                         });
 
-                    tree_column = tree_column.push(
-                        container(folder_drop_area).padding(iced::Padding {
+                    tree_column =
+                        tree_column.push(container(folder_drop_area).padding(iced::Padding {
                             top: 0.0,
                             right: 0.0,
                             bottom: 0.0,
                             left: indent,
-                        }),
-                    );
+                        }));
                 }
-                RenderItem::Request { id, name, method, depth } => {
+                RenderItem::Request {
+                    id,
+                    name,
+                    method,
+                    depth,
+                } => {
                     let indent = (depth as f32) * ds.spacing.lg;
                     let m_color = method_color(method);
                     let method_label = method.to_string();
@@ -968,14 +976,13 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
                         .on_exit(Message::Tree(TreeMessage::ItemUnhovered(
                             TreeHoveredItem::Request(id),
                         )));
-                    tree_column = tree_column.push(
-                        container(request_hover_area).padding(iced::Padding {
+                    tree_column =
+                        tree_column.push(container(request_hover_area).padding(iced::Padding {
                             top: 0.0,
                             right: 0.0,
                             bottom: 0.0,
                             left: indent,
-                        }),
-                    );
+                        }));
                 }
             }
         }
@@ -1112,9 +1119,7 @@ fn view_normal<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
     .spacing(ds.spacing.sm);
 
     if let Some(error_el) = error_element {
-        main_column = main_column.push(
-            container(error_el).padding(ds.spacing.sm),
-        );
+        main_column = main_column.push(container(error_el).padding(ds.spacing.sm));
     }
 
     main_column = main_column.push(content);
@@ -1216,7 +1221,9 @@ fn flatten_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midway_core::domain::http::{AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft};
+    use midway_core::domain::http::{
+        AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft,
+    };
 
     fn make_folder(id: &str, name: &str, parent: Option<&str>, collection_id: &str) -> Folder {
         Folder {
@@ -1227,7 +1234,12 @@ mod tests {
         }
     }
 
-    fn make_request(id: &str, name: &str, folder_id: Option<&str>, method: HttpMethod) -> SavedRequestRecord {
+    fn make_request(
+        id: &str,
+        name: &str,
+        folder_id: Option<&str>,
+        method: HttpMethod,
+    ) -> SavedRequestRecord {
         SavedRequestRecord {
             id: id.to_string(),
             collection_id: "col1".to_string(),
@@ -1299,9 +1311,12 @@ mod tests {
             make_folder("f1", "Parent", None, "col1"),
             make_folder("f2", "Child", Some("f1"), "col1"),
         ];
-        let requests = vec![
-            make_request("r1", "Request in Child", Some("f2"), HttpMethod::GET),
-        ];
+        let requests = vec![make_request(
+            "r1",
+            "Request in Child",
+            Some("f2"),
+            HttpMethod::GET,
+        )];
 
         let tree = build_tree(&folders, &requests);
 
@@ -1351,9 +1366,7 @@ mod tests {
     #[test]
     fn filter_tree_no_matches_returns_none() {
         let folders = vec![make_folder("f1", "Auth", None, "col1")];
-        let requests = vec![
-            make_request("r1", "Login", Some("f1"), HttpMethod::POST),
-        ];
+        let requests = vec![make_request("r1", "Login", Some("f1"), HttpMethod::POST)];
 
         let tree = build_tree(&folders, &requests);
         let filtered = filter_tree(&tree, "nonexistent");
@@ -1396,16 +1409,18 @@ mod tree_pane_state_property_tests {
 
     use super::*;
     use crate::app::{
-        Midway, RequestTabState, TreeViewState, WorkspacePanelState, PaletteState,
-        SessionStoreState, TopBarMode, UpdaterState, MainContentFocus,
+        MainContentFocus, Midway, PaletteState, RequestTabState, SessionStoreState, TopBarMode,
+        TreeViewState, UpdaterState, WorkspacePanelState,
     };
     use crate::state::AppState;
     use crate::ui::design_system::ThemeMode;
     use midway_core::domain::cookies::CookieJarHandle;
+    use midway_core::domain::http::{
+        AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft,
+    };
     use midway_core::domain::workspace::{
         CollectionSummary, CollectionWithRequests, Folder, SavedRequestRecord, WorkspaceSnapshot,
     };
-    use midway_core::domain::http::{AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft};
     use midway_core::infra::sqlite_repository::SqliteRepository;
     use midway_core::runtime::request_executor::RequestExecutorHandle;
     use midway_core::runtime::secret_executor::SecretExecutorHandle;
@@ -1589,7 +1604,14 @@ mod tree_pane_state_property_tests {
 
     /// Master strategy that generates arbitrary combinations and checks the
     /// property against the expected `TreePaneState`.
-    fn arb_tree_state_scenario() -> impl Strategy<Value = (Vec<CollectionWithRequests>, Option<String>, String, TreePaneState)> {
+    fn arb_tree_state_scenario() -> impl Strategy<
+        Value = (
+            Vec<CollectionWithRequests>,
+            Option<String>,
+            String,
+            TreePaneState,
+        ),
+    > {
         prop_oneof![
             // Case 1: No collections → NoCollections
             2 => arb_filter().prop_map(|filter| {
@@ -1772,14 +1794,20 @@ mod tree_pane_state_property_tests {
             String::new(),
         );
 
-        let _ = update_tree(&mut state, TreeMessage::RequestOpened("request-1".to_string()));
+        let _ = update_tree(
+            &mut state,
+            TreeMessage::RequestOpened("request-1".to_string()),
+        );
         let first_tab_id = state.tabs[0].id.clone();
         assert_eq!(state.tabs.len(), 1);
         assert_eq!(state.tabs[0].draft.id.as_deref(), Some("request-1"));
 
         // Opening it again focuses the logical request instead of adding
         // another tab.
-        let _ = update_tree(&mut state, TreeMessage::RequestOpened("request-1".to_string()));
+        let _ = update_tree(
+            &mut state,
+            TreeMessage::RequestOpened("request-1".to_string()),
+        );
 
         assert_eq!(state.tabs.len(), 1);
         assert_eq!(state.tabs[0].id, first_tab_id);
@@ -1906,7 +1934,10 @@ mod tree_pane_state_property_tests {
             .request_drag
             .as_ref()
             .is_some_and(|drag| drag.target.is_none()));
-        assert_eq!(state.tree.error.as_deref(), Some("Ese destino ya no está disponible."));
+        assert_eq!(
+            state.tree.error.as_deref(),
+            Some("Ese destino ya no está disponible.")
+        );
         let task = update_tree(&mut state, TreeMessage::RequestDragReleased);
         assert_eq!(task.units(), 0);
         assert!(state.tree.moving_request_id.is_none());
@@ -1986,7 +2017,9 @@ mod tree_pane_state_property_tests {
         );
 
         assert_eq!(
-            state.workspace.collections[0].requests[0].folder_id.as_deref(),
+            state.workspace.collections[0].requests[0]
+                .folder_id
+                .as_deref(),
             Some("folder-2")
         );
         assert!(!state.tree.collapsed.contains("folder-2"));
@@ -2008,21 +2041,25 @@ fn action_tooltip<'a>(
     let background = ds.palette.surface_elevated;
     let border = ds.palette.border;
     let radius = ds.radius.control;
-    tooltip(content, text(label).size(ds.typography.secondary.size), tooltip::Position::Top)
-        .gap(6)
-        .padding(6)
-        .delay(iced::time::milliseconds(300))
-        .snap_within_viewport(true)
-        .style(move |_theme| container::Style {
-            background: Some(background.into()),
-            border: Border {
-                color: border,
-                width: 1.0,
-                radius: radius.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
+    tooltip(
+        content,
+        text(label).size(ds.typography.secondary.size),
+        tooltip::Position::Top,
+    )
+    .gap(6)
+    .padding(6)
+    .delay(iced::time::milliseconds(300))
+    .snap_within_viewport(true)
+    .style(move |_theme| container::Style {
+        background: Some(background.into()),
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: radius.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 fn compact_action<'a>(
@@ -2081,7 +2118,11 @@ fn finish_request_drag(state: &mut Midway) -> iced::Task<Message> {
     let destination_folder_id = match target {
         RequestDropTarget::Root => None,
         RequestDropTarget::Folder(folder_id) => {
-            if !collection.folders.iter().any(|folder| folder.id == folder_id) {
+            if !collection
+                .folders
+                .iter()
+                .any(|folder| folder.id == folder_id)
+            {
                 state.tree.error = Some("La carpeta de destino ya no existe.".to_string());
                 return iced::Task::none();
             }

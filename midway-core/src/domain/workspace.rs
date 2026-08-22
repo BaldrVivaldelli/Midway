@@ -220,7 +220,6 @@ pub fn validate_request_folder_association(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

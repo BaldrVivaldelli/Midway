@@ -139,7 +139,9 @@ pub struct SessionSnapshot {
 /// crearlo si no existe.
 pub fn session_file_path() -> AppResult<PathBuf> {
     let data_dir = dirs::data_dir()
-        .ok_or_else(|| AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string()))?
+        .ok_or_else(|| {
+            AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string())
+        })?
         .join(APP_NAME);
 
     Ok(data_dir.join(SESSION_FILE_NAME))
@@ -172,8 +174,8 @@ fn write_session_snapshot_at(path: &Path, snapshot: &SessionSnapshot) -> AppResu
 
     std::fs::create_dir_all(parent).map_err(|error| AppError::Io(error.to_string()))?;
 
-    let serialized =
-        serde_json::to_string(snapshot).map_err(|error| AppError::Serialization(error.to_string()))?;
+    let serialized = serde_json::to_string(snapshot)
+        .map_err(|error| AppError::Serialization(error.to_string()))?;
 
     let tmp_path = parent.join(SESSION_TMP_FILE_NAME);
 
@@ -306,7 +308,9 @@ mod tests {
 
     use super::*;
     use crate::app::RequestTab;
-    use midway_core::domain::http::{AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft};
+    use midway_core::domain::http::{
+        AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft,
+    };
 
     fn session_path_in(dir: &Path) -> PathBuf {
         dir.join(SESSION_FILE_NAME)
@@ -344,7 +348,10 @@ mod tests {
         SessionSnapshot {
             version: SESSION_SCHEMA_VERSION,
             active_tab_id: Some("tab-1".to_string()),
-            open_tabs: vec![sample_tab("tab-1", "https://example.com/a"), sample_tab("tab-2", "https://example.com/b")],
+            open_tabs: vec![
+                sample_tab("tab-1", "https://example.com/a"),
+                sample_tab("tab-2", "https://example.com/b"),
+            ],
             closed_tabs: vec![sample_tab("tab-closed-1", "https://example.com/closed")],
             panel_sizes: PanelSizes {
                 workspace_panel_width: 280.0,
@@ -359,10 +366,9 @@ mod tests {
 
     #[test]
     fn panel_sizes_from_older_session_default_request_panel_width() {
-        let panel_sizes: PanelSizes = serde_json::from_str(
-            r#"{"workspacePanelWidth":280.0,"responsePanelHeight":320.0}"#,
-        )
-        .expect("el formato anterior debe seguir siendo compatible");
+        let panel_sizes: PanelSizes =
+            serde_json::from_str(r#"{"workspacePanelWidth":280.0,"responsePanelHeight":320.0}"#)
+                .expect("el formato anterior debe seguir siendo compatible");
 
         assert_eq!(panel_sizes.workspace_panel_width, 280.0);
         assert_eq!(panel_sizes.response_panel_height, 320.0);
@@ -377,7 +383,8 @@ mod tests {
         let path = session_path_in(temp_dir.path());
         let snapshot = sample_snapshot();
 
-        write_session_snapshot_at(&path, &snapshot).expect("la escritura atómica no debería fallar");
+        write_session_snapshot_at(&path, &snapshot)
+            .expect("la escritura atómica no debería fallar");
 
         let read_back = read_session_snapshot_at(&path).expect("la lectura no debería fallar");
 
@@ -392,7 +399,11 @@ mod tests {
             assert_eq!(actual.draft.url, expected.draft.url);
             assert_eq!(actual.active_request_tab, expected.active_request_tab);
         }
-        for (actual, expected) in read_back.closed_tabs.iter().zip(snapshot.closed_tabs.iter()) {
+        for (actual, expected) in read_back
+            .closed_tabs
+            .iter()
+            .zip(snapshot.closed_tabs.iter())
+        {
             assert_eq!(actual.id, expected.id);
             assert_eq!(actual.draft.url, expected.draft.url);
         }
@@ -408,11 +419,18 @@ mod tests {
         let path = session_path_in(temp_dir.path());
         let snapshot = sample_snapshot();
 
-        write_session_snapshot_at(&path, &snapshot).expect("la escritura atómica no debería fallar");
+        write_session_snapshot_at(&path, &snapshot)
+            .expect("la escritura atómica no debería fallar");
 
         let tmp_path = temp_dir.path().join(SESSION_TMP_FILE_NAME);
-        assert!(!tmp_path.exists(), "el archivo temporal no debería sobrevivir a un rename exitoso");
-        assert!(path.exists(), "el archivo final debería existir tras la escritura");
+        assert!(
+            !tmp_path.exists(),
+            "el archivo temporal no debería sobrevivir a un rename exitoso"
+        );
+        assert!(
+            path.exists(),
+            "el archivo final debería existir tras la escritura"
+        );
 
         let read_back = read_session_snapshot_at(&path).expect("la lectura no debería fallar");
         assert_eq!(read_back.version, snapshot.version);
@@ -483,13 +501,17 @@ mod tests {
         fn invalid_json_returns_discarded_corrupt_with_reason() {
             let temp_dir = tempfile::tempdir().expect("no se pudo crear el directorio temporal");
             let path = session_path_in(temp_dir.path());
-            std::fs::write(&path, "{ esto no es JSON válido").expect("no se pudo escribir el archivo de prueba");
+            std::fs::write(&path, "{ esto no es JSON válido")
+                .expect("no se pudo escribir el archivo de prueba");
 
             let outcome = load_session_or_default_at(&path);
 
             match outcome {
                 SessionLoadOutcome::DiscardedCorruptOrIncompatible { reason } => {
-                    assert!(!reason.is_empty(), "el motivo del descarte no debería estar vacío");
+                    assert!(
+                        !reason.is_empty(),
+                        "el motivo del descarte no debería estar vacío"
+                    );
                 }
                 other => panic!("se esperaba DiscardedCorruptOrIncompatible, se obtuvo {other:?}"),
             }
@@ -510,7 +532,10 @@ mod tests {
 
             match outcome {
                 SessionLoadOutcome::DiscardedCorruptOrIncompatible { reason } => {
-                    assert!(!reason.is_empty(), "el motivo del descarte no debería estar vacío");
+                    assert!(
+                        !reason.is_empty(),
+                        "el motivo del descarte no debería estar vacío"
+                    );
                 }
                 other => panic!("se esperaba DiscardedCorruptOrIncompatible, se obtuvo {other:?}"),
             }
@@ -814,19 +839,21 @@ mod tests {
                 arb_body(),
                 arb_response_tests(),
             )
-                .prop_map(|(method, url, query, headers, auth, body, response_tests)| RequestDraft {
-                    id: None,
-                    name: "round-trip draft".to_string(),
-                    method,
-                    url,
-                    query,
-                    headers,
-                    auth,
-                    body,
-                    timeout_ms: 30_000,
-                    environment_id: None,
-                    response_tests,
-                })
+                .prop_map(
+                    |(method, url, query, headers, auth, body, response_tests)| RequestDraft {
+                        id: None,
+                        name: "round-trip draft".to_string(),
+                        method,
+                        url,
+                        query,
+                        headers,
+                        auth,
+                        body,
+                        timeout_ms: 30_000,
+                        environment_id: None,
+                        response_tests,
+                    },
+                )
         }
 
         fn arb_request_tab() -> impl Strategy<Value = RequestTab> {
@@ -849,7 +876,9 @@ mod tests {
             )
         }
 
-        pub(super) fn arb_tab_snapshots(id_prefix: &'static str) -> impl Strategy<Value = Vec<TabSnapshot>> {
+        pub(super) fn arb_tab_snapshots(
+            id_prefix: &'static str,
+        ) -> impl Strategy<Value = Vec<TabSnapshot>> {
             proptest::collection::vec(arb_tab_snapshot(id_prefix), 0..=3)
         }
 
@@ -862,12 +891,7 @@ mod tests {
         /// del spec `midway-baseline-audit-and-first-vertical`) reutilice
         /// este generador en lugar de duplicarlo.
         pub(super) fn arb_panel_sizes() -> impl Strategy<Value = PanelSizes> {
-            (
-                50.0f32..2000.0f32,
-                50.0f32..2000.0f32,
-                50.0f32..2000.0f32,
-            )
-            .prop_map(
+            (50.0f32..2000.0f32, 50.0f32..2000.0f32, 50.0f32..2000.0f32).prop_map(
                 |(workspace_panel_width, response_panel_height, request_panel_width)| PanelSizes {
                     workspace_panel_width,
                     response_panel_height,
@@ -900,7 +924,14 @@ mod tests {
                 proptest::option::of(arb_token()),
             )
                 .prop_map(
-                    |(active_tab_id, open_tabs, closed_tabs, panel_sizes, saved_at, active_collection_id)| SessionSnapshot {
+                    |(
+                        active_tab_id,
+                        open_tabs,
+                        closed_tabs,
+                        panel_sizes,
+                        saved_at,
+                        active_collection_id,
+                    )| SessionSnapshot {
                         version: SESSION_SCHEMA_VERSION,
                         active_tab_id,
                         open_tabs,

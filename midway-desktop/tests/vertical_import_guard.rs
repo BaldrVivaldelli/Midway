@@ -120,8 +120,9 @@ fn strip_comments(source: &str) -> String {
                 hashes += 1;
             }
             if chars.get(i + 1 + hashes) == Some(&'"') {
-                let closing: String =
-                    std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
+                let closing: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
                 out.push('r');
                 for _ in 0..hashes {
                     out.push('#');
@@ -262,10 +263,12 @@ fn la_vertical_no_referencia_dependencias_prohibidas() {
     let offending: Vec<String> = FORBIDDEN_REFERENCES
         .iter()
         .filter(|(pattern, _)| scanned.contains(*pattern))
-        .map(|(pattern, reason)| match first_line_containing(&source, pattern) {
-            Some(line) => format!("`{pattern}` (línea {line} aprox.): {reason}"),
-            None => format!("`{pattern}`: {reason}"),
-        })
+        .map(
+            |(pattern, reason)| match first_line_containing(&source, pattern) {
+                Some(line) => format!("`{pattern}` (línea {line} aprox.): {reason}"),
+                None => format!("`{pattern}`: {reason}"),
+            },
+        )
         .collect();
 
     assert!(

@@ -68,7 +68,11 @@ fn transitive_dependency_names(metadata: &Value, root_package_name: &str) -> Has
             .as_array()
             .expect("node.dependencies should be an array")
             .iter()
-            .map(|d| d.as_str().expect("dependency id should be a string").to_string())
+            .map(|d| {
+                d.as_str()
+                    .expect("dependency id should be a string")
+                    .to_string()
+            })
             .collect::<Vec<_>>();
         deps_by_id.insert(id.to_string(), deps);
     }
@@ -77,7 +81,9 @@ fn transitive_dependency_names(metadata: &Value, root_package_name: &str) -> Has
         .iter()
         .find(|(_, name)| name.as_str() == root_package_name)
         .map(|(id, _)| id.clone())
-        .unwrap_or_else(|| panic!("no se encontró el paquete `{root_package_name}` en cargo metadata"));
+        .unwrap_or_else(|| {
+            panic!("no se encontró el paquete `{root_package_name}` en cargo metadata")
+        });
 
     // BFS/DFS sobre el grafo de resolución partiendo de `midway-core`.
     let mut visited_ids: HashSet<String> = HashSet::new();

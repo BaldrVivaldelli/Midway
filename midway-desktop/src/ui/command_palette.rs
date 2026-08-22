@@ -9,7 +9,9 @@
 //! y shortcuts (Fase 5)".
 //! Ver requisitos: 6.1, 6.2.
 
-use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_input};
+use iced::widget::{
+    button, column, container, mouse_area, opaque, row, scrollable, stack, text, text_input,
+};
 use iced::{Border, Color, Element, Length};
 
 use crate::app::{build_palette_items, Message, Midway, PaletteMessage};
@@ -70,9 +72,12 @@ fn palette_box<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
     let items = build_palette_items(state);
     let results = search_palette_items(&items, &state.palette.query, PALETTE_RESULT_LIMIT);
 
-    let search_input = text_input("Buscar acciones, colecciones o requests...", &state.palette.query)
-        .on_input(|query| Message::Palette(PaletteMessage::QueryChanged(query)))
-        .width(Length::Fill);
+    let search_input = text_input(
+        "Buscar acciones, colecciones o requests...",
+        &state.palette.query,
+    )
+    .on_input(|query| Message::Palette(PaletteMessage::QueryChanged(query)))
+    .width(Length::Fill);
 
     let mut results_list = column![].spacing(4);
     if results.is_empty() {
@@ -87,19 +92,25 @@ fn palette_box<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message>
     let border_color = ds.palette.border;
     let border_radius = ds.radius.panel;
 
-    container(column![search_input, scrollable(results_list).height(Length::Fixed(320.0))].spacing(8))
-        .width(Length::Fixed(480.0))
-        .padding(12)
-        .style(move |_theme| container::Style {
-            background: Some(background.into()),
-            border: Border {
-                color: border_color,
-                width: 1.0,
-                radius: border_radius.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
+    container(
+        column![
+            search_input,
+            scrollable(results_list).height(Length::Fixed(320.0))
+        ]
+        .spacing(8),
+    )
+    .width(Length::Fixed(480.0))
+    .padding(12)
+    .style(move |_theme| container::Style {
+        background: Some(background.into()),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: border_radius.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// Fila clickable de un resultado del palette (Requisito 6.2): título,
@@ -117,6 +128,8 @@ fn palette_result_row<'a>(item: CommandPaletteItem, ds: &DesignSystem) -> Elemen
 
     button(item_column)
         .width(Length::Fill)
-        .on_press(Message::Palette(PaletteMessage::ItemSelected { item_id: item.id }))
+        .on_press(Message::Palette(PaletteMessage::ItemSelected {
+            item_id: item.id,
+        }))
         .into()
 }

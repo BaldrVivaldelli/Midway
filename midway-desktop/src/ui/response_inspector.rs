@@ -73,10 +73,16 @@ pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Messa
 
             // Status badge: ✓ 201 Created  323 ms  65 bytes
             let status_line = row![
-                text(check_icon).size(body.size).font(body_font).color(status_clr),
+                text(check_icon)
+                    .size(body.size)
+                    .font(body_font)
+                    .color(status_clr),
                 text(format!("{} {}", status, status_text))
                     .size(body.size)
-                    .font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+                    .font(font_for(&TextStyle {
+                        weight: iced::font::Weight::Bold,
+                        ..body
+                    }))
                     .color(status_clr),
                 text(format!("{} ms", duration_ms))
                     .size(secondary.size)
@@ -347,7 +353,11 @@ fn body_tab<'a>(outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, 
 /// - ≥1 cookie: filas nombre/valor en el orden devuelto por el jar.
 /// - 0 cookies: estado vacío "Sin cookies almacenadas" (con precedencia, Req
 ///   9.3), renderizado por [`crate::ui::empty_state`].
-fn cookies_tab<'a>(state: &'a Midway, outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, Message> {
+fn cookies_tab<'a>(
+    state: &'a Midway,
+    outcome: &'a ResponseOutcome,
+    ds: &DesignSystem,
+) -> Element<'a, Message> {
     let cookies = state
         .app_state
         .cookie_jar
@@ -364,12 +374,8 @@ fn cookies_tab<'a>(state: &'a Midway, outcome: &'a ResponseOutcome, ds: &DesignS
         .into_iter()
         .map(|cookie: CookiePair| {
             row![
-                text(cookie.name)
-                    .size(body.size)
-                    .font(body_font),
-                text(cookie.value)
-                    .size(body.size)
-                    .font(body_font),
+                text(cookie.name).size(body.size).font(body_font),
+                text(cookie.value).size(body.size).font(body_font),
             ]
             .spacing(ds.spacing.sm)
             .into()

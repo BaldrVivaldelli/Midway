@@ -76,9 +76,9 @@ impl SecretExecutorHandle {
             .await
             .map_err(|_| AppError::Runtime("El executor de secrets se cerró.".to_string()))?;
 
-        response
-            .await
-            .map_err(|_| AppError::Runtime("No llegó respuesta del executor de secrets.".to_string()))?
+        response.await.map_err(|_| {
+            AppError::Runtime("No llegó respuesta del executor de secrets.".to_string())
+        })?
     }
 
     pub async fn set(&self, alias: String, value: String) -> AppResult<()> {
@@ -92,9 +92,9 @@ impl SecretExecutorHandle {
             .await
             .map_err(|_| AppError::Runtime("El executor de secrets se cerró.".to_string()))?;
 
-        response
-            .await
-            .map_err(|_| AppError::Runtime("No llegó respuesta del executor de secrets.".to_string()))?
+        response.await.map_err(|_| {
+            AppError::Runtime("No llegó respuesta del executor de secrets.".to_string())
+        })?
     }
 
     pub async fn delete(&self, alias: String) -> AppResult<()> {
@@ -104,8 +104,8 @@ impl SecretExecutorHandle {
             .await
             .map_err(|_| AppError::Runtime("El executor de secrets se cerró.".to_string()))?;
 
-        response
-            .await
-            .map_err(|_| AppError::Runtime("No llegó respuesta del executor de secrets.".to_string()))?
+        response.await.map_err(|_| {
+            AppError::Runtime("No llegó respuesta del executor de secrets.".to_string())
+        })?
     }
 }

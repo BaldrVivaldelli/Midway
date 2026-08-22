@@ -27,7 +27,9 @@ pub struct AppState {
 impl AppState {
     pub async fn initialize() -> AppResult<Self> {
         let data_dir = dirs::data_dir()
-            .ok_or_else(|| AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string()))?
+            .ok_or_else(|| {
+                AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string())
+            })?
             .join(APP_NAME);
 
         std::fs::create_dir_all(&data_dir).map_err(|error| AppError::Io(error.to_string()))?;

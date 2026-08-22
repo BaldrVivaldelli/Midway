@@ -4,10 +4,10 @@
 //! botón "+" al final para crear colecciones. Cada icono de colección es un
 //! cuadrado de color con iniciales derivadas del nombre.
 
+use iced::widget::tooltip::Position as TooltipPosition;
 use iced::widget::{
     button, column, container, mouse_area, opaque, row, stack, text, text_input, tooltip,
 };
-use iced::widget::tooltip::Position as TooltipPosition;
 use iced::{Border, Color, Element, Length};
 
 use crate::app::{ActivityBarMessage, MainContentFocus, Message, Midway};
@@ -78,13 +78,31 @@ pub fn collection_initials(name: &str) -> String {
     // Multiple words?
     let words: Vec<&str> = trimmed.split_whitespace().collect();
     if words.len() >= 2 {
-        let c1 = words[0].chars().next().unwrap().to_uppercase().next().unwrap();
-        let c2 = words[1].chars().next().unwrap().to_uppercase().next().unwrap();
+        let c1 = words[0]
+            .chars()
+            .next()
+            .unwrap()
+            .to_uppercase()
+            .next()
+            .unwrap();
+        let c2 = words[1]
+            .chars()
+            .next()
+            .unwrap()
+            .to_uppercase()
+            .next()
+            .unwrap();
         format!("{c1}{c2}")
     } else {
         // Single word, ≥2 chars
         let c1 = first.to_uppercase().next().unwrap();
-        let c2 = trimmed.chars().nth(1).unwrap().to_lowercase().next().unwrap();
+        let c2 = trimmed
+            .chars()
+            .nth(1)
+            .unwrap()
+            .to_lowercase()
+            .next()
+            .unwrap();
         format!("{c1}{c2}")
     }
 }
@@ -133,7 +151,12 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
     // 2. Activity icon (fixed)
     items = items.push(
         tooltip(
-            fixed_icon_button("⚡", "Activity", ds, Message::ActivityBar(ActivityBarMessage::ActivityPressed)),
+            fixed_icon_button(
+                "⚡",
+                "Activity",
+                ds,
+                Message::ActivityBar(ActivityBarMessage::ActivityPressed),
+            ),
             text(tooltip_text_for(&HoveredItem::Activity)).size(ds.typography.secondary.size),
             TooltipPosition::Right,
         )
@@ -142,11 +165,13 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
 
     // 3. One icon per collection
     for collection in &state.workspace.collections {
-        let is_active = is_collection_active(state.active_collection_id.as_deref(), &collection.collection.id);
-        let tooltip_label = tooltip_text_for(&HoveredItem::Collection(
-            collection.collection.name.clone(),
-        ))
-        .to_string();
+        let is_active = is_collection_active(
+            state.active_collection_id.as_deref(),
+            &collection.collection.id,
+        );
+        let tooltip_label =
+            tooltip_text_for(&HoveredItem::Collection(collection.collection.name.clone()))
+                .to_string();
         items = items.push(
             tooltip(
                 collection_icon_button(&collection.collection, is_active, ds),
@@ -161,9 +186,13 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
     let plus_text_color = ds.palette.text_primary;
     let plus_radius = ds.radius.control;
     let plus_btn = button(
-        container(text("+").size(ds.typography.subtitle.size).color(plus_text_color))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
+        container(
+            text("+")
+                .size(ds.typography.subtitle.size)
+                .color(plus_text_color),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill),
     )
     .width(Length::Fixed(36.0))
     .height(Length::Fixed(36.0))
@@ -177,7 +206,9 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
         },
         ..button::Style::default()
     })
-    .on_press(Message::ActivityBar(ActivityBarMessage::CreateCollectionPressed));
+    .on_press(Message::ActivityBar(
+        ActivityBarMessage::CreateCollectionPressed,
+    ));
 
     items = items.push(
         tooltip(
@@ -258,9 +289,13 @@ fn home_icon_button<'a>(state: &Midway, ds: &DesignSystem) -> Element<'a, Messag
     let radius = ds.radius.control;
 
     button(
-        container(text("⌂").size(ds.typography.subtitle.size).color(text_color))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
+        container(
+            text("⌂")
+                .size(ds.typography.subtitle.size)
+                .color(text_color),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill),
     )
     .width(Length::Fixed(36.0))
     .height(Length::Fixed(36.0))
@@ -277,14 +312,23 @@ fn home_icon_button<'a>(state: &Midway, ds: &DesignSystem) -> Element<'a, Messag
     .into()
 }
 
-fn fixed_icon_button<'a>(icon: &'static str, _label: &'static str, ds: &DesignSystem, on_press: Message) -> Element<'a, Message> {
+fn fixed_icon_button<'a>(
+    icon: &'static str,
+    _label: &'static str,
+    ds: &DesignSystem,
+    on_press: Message,
+) -> Element<'a, Message> {
     let text_color = ds.palette.text_secondary;
     let radius = ds.radius.control;
 
     button(
-        container(text(icon).size(ds.typography.subtitle.size).color(text_color))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
+        container(
+            text(icon)
+                .size(ds.typography.subtitle.size)
+                .color(text_color),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill),
     )
     .width(Length::Fixed(36.0))
     .height(Length::Fixed(36.0))
@@ -312,22 +356,30 @@ fn collection_icon_button<'a>(
     let radius = ds.radius.control;
     let accent = ds.palette.accent;
 
-    let border_color = if is_active { accent } else { Color::TRANSPARENT };
+    let border_color = if is_active {
+        accent
+    } else {
+        Color::TRANSPARENT
+    };
 
     let id = collection.id.clone();
 
     button(
-        container(text(initials).size(ds.typography.secondary.size).color(text_color))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(move |_theme| container::Style {
-                background: Some(bg_color.into()),
-                border: Border {
-                    radius: radius.into(),
-                    ..Border::default()
-                },
-                ..container::Style::default()
-            }),
+        container(
+            text(initials)
+                .size(ds.typography.secondary.size)
+                .color(text_color),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(bg_color.into()),
+            border: Border {
+                radius: radius.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        }),
     )
     .width(Length::Fixed(36.0))
     .height(Length::Fixed(36.0))
@@ -340,7 +392,9 @@ fn collection_icon_button<'a>(
         },
         ..button::Style::default()
     })
-    .on_press(Message::ActivityBar(ActivityBarMessage::CollectionSelected(id)))
+    .on_press(Message::ActivityBar(
+        ActivityBarMessage::CollectionSelected(id),
+    ))
     .into()
 }
 
@@ -356,7 +410,9 @@ fn create_collection_prompt_view<'a>(
     // Name input
     let input = text_input("Nombre...", &prompt.name_input)
         .on_input(|s| Message::ActivityBar(ActivityBarMessage::CreateCollectionNameChanged(s)))
-        .on_submit(Message::ActivityBar(ActivityBarMessage::CreateCollectionConfirmed))
+        .on_submit(Message::ActivityBar(
+            ActivityBarMessage::CreateCollectionConfirmed,
+        ))
         .size(ds.typography.secondary.size)
         .width(Length::Fill);
     col = col.push(input);
@@ -377,29 +433,41 @@ fn create_collection_prompt_view<'a>(
     let accent = ds.palette.accent;
 
     let buttons = row![
-        button(text("Crear").size(ds.typography.secondary.size).color(confirm_text_color))
-            .padding([ds.spacing.xs, ds.spacing.sm])
-            .style(move |_theme, _status| button::Style {
-                background: Some(accent.into()),
-                text_color: Color::WHITE,
-                border: Border {
-                    radius: radius.into(),
-                    ..Border::default()
-                },
-                ..button::Style::default()
-            })
-            .on_press(Message::ActivityBar(ActivityBarMessage::CreateCollectionConfirmed)),
-        button(text("Cancelar").size(ds.typography.secondary.size).color(cancel_text_color))
-            .padding([ds.spacing.xs, ds.spacing.sm])
-            .style(move |_theme, _status| button::Style {
-                text_color: cancel_text_color,
-                border: Border {
-                    radius: radius.into(),
-                    ..Border::default()
-                },
-                ..button::Style::default()
-            })
-            .on_press(Message::ActivityBar(ActivityBarMessage::CreateCollectionCancelled)),
+        button(
+            text("Crear")
+                .size(ds.typography.secondary.size)
+                .color(confirm_text_color)
+        )
+        .padding([ds.spacing.xs, ds.spacing.sm])
+        .style(move |_theme, _status| button::Style {
+            background: Some(accent.into()),
+            text_color: Color::WHITE,
+            border: Border {
+                radius: radius.into(),
+                ..Border::default()
+            },
+            ..button::Style::default()
+        })
+        .on_press(Message::ActivityBar(
+            ActivityBarMessage::CreateCollectionConfirmed
+        )),
+        button(
+            text("Cancelar")
+                .size(ds.typography.secondary.size)
+                .color(cancel_text_color)
+        )
+        .padding([ds.spacing.xs, ds.spacing.sm])
+        .style(move |_theme, _status| button::Style {
+            text_color: cancel_text_color,
+            border: Border {
+                radius: radius.into(),
+                ..Border::default()
+            },
+            ..button::Style::default()
+        })
+        .on_press(Message::ActivityBar(
+            ActivityBarMessage::CreateCollectionCancelled
+        )),
     ]
     .spacing(ds.spacing.xs);
 
@@ -542,15 +610,18 @@ mod tests {
 
     #[test]
     fn tooltip_text_create_button() {
-        assert_eq!(tooltip_text_for(&HoveredItem::CreateButton), "Nueva colección");
+        assert_eq!(
+            tooltip_text_for(&HoveredItem::CreateButton),
+            "Nueva colección"
+        );
     }
 
     // ─── Property-based tests ───────────────────────────────────────────────
 
     mod property_tests {
         use super::*;
-        use proptest::prelude::*;
         use crate::ui::design_system::{DesignSystem, ThemeMode};
+        use proptest::prelude::*;
 
         /// Strategy to generate arbitrary `HoveredItem` values.
         fn arb_hovered_item() -> impl Strategy<Value = HoveredItem> {
@@ -596,10 +667,7 @@ mod tests {
 
         /// Strategy to generate arbitrary `ThemeMode` values for broader coverage.
         fn arb_theme_mode() -> impl Strategy<Value = ThemeMode> {
-            prop_oneof![
-                Just(ThemeMode::Light),
-                Just(ThemeMode::Dark),
-            ]
+            prop_oneof![Just(ThemeMode::Light), Just(ThemeMode::Dark),]
         }
 
         proptest! {

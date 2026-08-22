@@ -109,10 +109,7 @@ pub fn no_response<'a, M>() -> EmptyState<'a, M> {
 /// periodos breves de carga se muestra el mismo componente con `hint` de
 /// progreso, en vez de dejar el área en blanco).
 pub fn response_in_flight<'a, M>() -> EmptyState<'a, M> {
-    EmptyState::new(
-        "Enviando el request",
-        "Esperando la respuesta del servidor",
-    )
+    EmptyState::new("Enviando el request", "Esperando la respuesta del servidor")
 }
 
 /// Tab Cookies sin cookies para la `final_url` de la respuesta activa.

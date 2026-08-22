@@ -33,8 +33,8 @@ pub fn apply_auth(
             });
         }
         AppliedAuth::Basic { username, password } => {
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(format!("{username}:{password}"));
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
 
             headers.push(ResolvedPair {
                 key: "authorization".to_string(),

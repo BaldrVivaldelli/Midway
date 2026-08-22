@@ -118,18 +118,22 @@ pub fn view<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
             let text_color = ds.palette.text_secondary;
             let radius = ds.radius.control;
             Some(
-                button(text("← Back").size(ds.typography.body.size).color(text_color))
-                    .padding([ds.spacing.xs, ds.spacing.sm])
-                    .style(move |_theme, _status| button::Style {
-                        text_color,
-                        border: Border {
-                            radius: radius.into(),
-                            ..Border::default()
-                        },
-                        ..button::Style::default()
-                    })
-                    .on_press(Message::TopBar(TopBarMessage::BackToComposer))
-                    .into(),
+                button(
+                    text("← Back")
+                        .size(ds.typography.body.size)
+                        .color(text_color),
+                )
+                .padding([ds.spacing.xs, ds.spacing.sm])
+                .style(move |_theme, _status| button::Style {
+                    text_color,
+                    border: Border {
+                        radius: radius.into(),
+                        ..Border::default()
+                    },
+                    ..button::Style::default()
+                })
+                .on_press(Message::TopBar(TopBarMessage::BackToComposer))
+                .into(),
             )
         } else {
             None
@@ -264,17 +268,21 @@ fn mode_tab<'a>(
         label_color
     };
 
-    let btn = button(text(label).size(ds.typography.body.size).color(tab_text_color))
-        .padding([ds.spacing.xs, ds.spacing.sm])
-        .style(move |_theme, _status| button::Style {
-            background: tab_background.map(Into::into),
-            text_color: tab_text_color,
-            border: Border {
-                radius: radius.into(),
-                ..Border::default()
-            },
-            ..button::Style::default()
-        });
+    let btn = button(
+        text(label)
+            .size(ds.typography.body.size)
+            .color(tab_text_color),
+    )
+    .padding([ds.spacing.xs, ds.spacing.sm])
+    .style(move |_theme, _status| button::Style {
+        background: tab_background.map(Into::into),
+        text_color: tab_text_color,
+        border: Border {
+            radius: radius.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    });
 
     if is_disabled {
         btn.into()
@@ -378,12 +386,10 @@ mod breadcrumb_property_tests {
         use std::collections::VecDeque;
         use std::sync::Arc;
 
-        let temp_file = tempfile::NamedTempFile::new()
-            .expect("no se pudo crear archivo temporal");
+        let temp_file = tempfile::NamedTempFile::new().expect("no se pudo crear archivo temporal");
         let db_path = temp_file.path().to_path_buf();
 
-        let runtime = tokio::runtime::Runtime::new()
-            .expect("no se pudo crear runtime de tokio");
+        let runtime = tokio::runtime::Runtime::new().expect("no se pudo crear runtime de tokio");
 
         let app_state = runtime.block_on(async {
             use midway_core::infra::sqlite_repository::SqliteRepository;

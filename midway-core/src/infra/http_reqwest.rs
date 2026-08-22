@@ -1,8 +1,16 @@
-use std::{error::Error as StdError, ffi::OsStr, path::Path, time::{Duration, Instant}};
+use std::{
+    error::Error as StdError,
+    ffi::OsStr,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use chrono::Utc;
 use futures_util::StreamExt;
-use reqwest::{multipart::{Form, Part}, Method};
+use reqwest::{
+    multipart::{Form, Part},
+    Method,
+};
 
 use crate::{
     app::errors::{AppError, AppResult},
@@ -198,10 +206,11 @@ fn normalize_reqwest_error(request: &ResolvedRequest, error: reqwest::Error) -> 
             "Se agotó el timeout del request hacia {url}. Probá con más timeout o revisá la red."
         ))
     } else if error.is_connect() {
-        if source_text.contains("certificate") || source_text.contains("tls") || source_text.contains("ssl") {
-            AppError::Http(format!(
-                "Falló la negociación TLS/SSL hacia {url}: {error}"
-            ))
+        if source_text.contains("certificate")
+            || source_text.contains("tls")
+            || source_text.contains("ssl")
+        {
+            AppError::Http(format!("Falló la negociación TLS/SSL hacia {url}: {error}"))
         } else if source_text.contains("dns")
             || source_text.contains("lookup")
             || source_text.contains("name or service not known")
@@ -212,9 +221,7 @@ fn normalize_reqwest_error(request: &ResolvedRequest, error: reqwest::Error) -> 
                 "No pude resolver el host de {url}. Verificá el dominio o tu DNS."
             ))
         } else {
-            AppError::Http(format!(
-                "No pude conectar con el servidor ({url}): {error}"
-            ))
+            AppError::Http(format!("No pude conectar con el servidor ({url}): {error}"))
         }
     } else if error.is_redirect() {
         AppError::Http(format!(
