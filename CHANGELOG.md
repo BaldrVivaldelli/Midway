@@ -7,6 +7,28 @@ y el proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ## [Unreleased]
 
+### Auditoría verificable del baseline y primera vertical de UI
+
+#### Added
+
+- Auditoría reproducible del producto y la arquitectura, con matriz de
+  funcionalidades, limitaciones conocidas, principios de producto, ADRs y
+  evidencias crudas de los quality gates.
+- Primera vertical extraída de `app.rs`: ajustes de tema con estado, mensajes,
+  actualización pura y vista propios, protegida por un test de dependencias.
+- Divisor redimensionable del panel de respuesta, persistencia de su altura y
+  nuevos estados vacíos con acciones contextuales.
+- Tests de caracterización, integración y propiedades que elevan la suite de
+  301 a 363 casos headless.
+
+#### Changed
+
+- El quality gate de CI y `make verify` ahora incluyen `rustfmt` y Clippy con
+  warnings tratados como errores, además de compilación y tests del workspace.
+- Se aplicó `rustfmt` a todo el workspace y se atendieron los lints de Clippy
+  detectados por la nueva compuerta estática, sin cambios funcionales.
+- Textos de las superficies modificadas unificados en español con voseo.
+
 ### Migración de Tauri + React/TypeScript a 100% Rust sobre `iced`
 
 Reescritura de Midway como una aplicación de escritorio **100% Rust** sobre

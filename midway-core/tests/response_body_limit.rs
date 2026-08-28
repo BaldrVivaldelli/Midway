@@ -13,6 +13,11 @@ use midway_core::infra::http_reqwest::{execute_request, execute_request_with_bod
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// El límite por defecto debe cubrir payloads de API reales (>= 8 MiB).
+/// Se verifica en tiempo de compilación: `DEFAULT_MAX_BODY_BYTES` es una
+/// constante, así que un `assert!` en runtime no aportaba nada.
+const _: () = assert!(DEFAULT_MAX_BODY_BYTES >= 8 * 1024 * 1024);
+
 fn get_request(url: String) -> ResolvedRequest {
     ResolvedRequest {
         method: HttpMethod::GET,
@@ -140,8 +145,4 @@ async fn default_entry_point_applies_the_default_limit() {
 
     assert_eq!(response.body_text, payload);
     assert!(!response.truncated);
-    assert!(
-        DEFAULT_MAX_BODY_BYTES >= 8 * 1024 * 1024,
-        "el límite por defecto debe cubrir payloads de API reales"
-    );
 }

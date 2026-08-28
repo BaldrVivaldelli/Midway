@@ -780,7 +780,7 @@ pub enum TopBarMode {
 
 /// Estado del Request_Tree_Pane: filtro de texto y estado de expandido/
 /// colapsado por folder (Req 5.3, 5.11).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TreeViewState {
     /// Texto actual del campo de filtro.
     pub filter: String,
@@ -817,20 +817,6 @@ pub struct RequestDragState {
 pub enum RequestDropTarget {
     Root,
     Folder(String),
-}
-
-impl Default for TreeViewState {
-    fn default() -> Self {
-        Self {
-            filter: String::new(),
-            collapsed: HashSet::new(),
-            collapsed_snapshot: None,
-            error: None,
-            request_drag: None,
-            moving_request_id: None,
-            hovered_item: None,
-        }
-    }
 }
 
 /// Estado del prompt de creación de colección del Activity_Bar (Req 2.5,
@@ -2842,6 +2828,18 @@ fn response_panel_height_from_cursor(cursor_y: f32, area_bottom_y: f32) -> f32 {
 /// - No hay pánico posible: el techo se construye con `max` y `min` sobre
 ///   constantes finitas, así que queda en `[RESPONSE_PANE_MIN_HEIGHT,
 ///   RESPONSE_PANE_MAX_HEIGHT]` y nunca es `NaN` ni menor que el piso.
+// `clippy::manual_clamp` sugiere reemplazar `max(...).min(...)` por
+// `clamp(...)` en el cálculo de `max_height`. NO se aplica a propósito: la
+// semántica ante `NaN` es distinta. `f32::max` descarta `NaN` (devuelve el
+// otro operando), mientras que `f32::clamp` lo propaga. El orden
+// `max`-luego-`min` es justamente lo que sanea un `available_height` igual a
+// `NaN` degradándolo al mínimo, en vez de contaminar el techo y con él el
+// resultado. Ese comportamiento está fijado por
+// `property_5_resize_bounds_clamp_and_are_idempotent` (Propiedad 5) en el
+// módulo `panel_resize_tests` y es el criterio de cierre de la limitación
+// `L35` en `docs/known-limitations.md`. Aplicar la sugerencia reintroduciría
+// la propagación de `NaN` y rompería la Propiedad 5.
+#[allow(clippy::manual_clamp)]
 fn response_panel_height_for_available(stored_height: f32, available_height: f32) -> f32 {
     let room_for_response =
         available_height - RESPONSE_DIVIDER_HIT_HEIGHT - REQUEST_PANE_MIN_HEIGHT;
@@ -6243,7 +6241,7 @@ async fn export_workspace_data(
     Ok(format!(
         "Exportado a {} ({} bytes).",
         path.to_string_lossy(),
-        payload.as_bytes().len()
+        payload.len()
     ))
 }
 
@@ -6469,6 +6467,15 @@ async fn import_workspace_data(
 /// environment nuevo (también con nombre diferenciado si colisiona),
 /// replicando la lógica de `apply_imported_http_collection` de
 /// `src-tauri/src/commands/mod.rs` en modo "merge".
+// `clippy::too_many_arguments` (8/7) es estructural: satisfacerlo exige
+// agrupar los parámetros en un struct nuevo, o sea un refactor real de la
+// firma y de todos sus call sites. Esta función ya fue tocada por la spec
+// vigente y su comportamiento de deduplicación de nombres está fijado por
+// tests, así que reestructurar la firma sólo para callar el lint agrega
+// riesgo de regresión sin ningún beneficio de comportamiento. Se deja el
+// `allow` acotado a esta función hasta que exista una tarea de refactor
+// dedicada.
+#[allow(clippy::too_many_arguments)]
 async fn import_http_collection(
     app_state: &Arc<AppState>,
     default_collection_name: String,
@@ -7627,7 +7634,7 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
                 {
                     Some(Message::Keyboard(KeyboardMessage::CloseActiveTabShortcut))
                 }
-                iced::keyboard::Key::Character(character) if character == "." => {
+                iced::keyboard::Key::Character(".") => {
                     Some(Message::Workspace(WorkspaceMessage::ToggleCollapsed))
                 }
                 _ => None,
@@ -8695,21 +8702,21 @@ mod tests {
     }
 
     /// Edita el `key` de la fila con el `id` dado, si existe.
-    fn ref_set_key(rows: &mut Vec<RefRow>, id: &str, key: String) {
+    fn ref_set_key(rows: &mut [RefRow], id: &str, key: String) {
         if let Some(row) = rows.iter_mut().find(|row| row.0 == id) {
             row.1 = key;
         }
     }
 
     /// Edita el `value` de la fila con el `id` dado, si existe.
-    fn ref_set_value(rows: &mut Vec<RefRow>, id: &str, value: String) {
+    fn ref_set_value(rows: &mut [RefRow], id: &str, value: String) {
         if let Some(row) = rows.iter_mut().find(|row| row.0 == id) {
             row.2 = value;
         }
     }
 
     /// Alterna el `enabled` de la fila con el `id` dado, si existe.
-    fn ref_toggle_enabled(rows: &mut Vec<RefRow>, id: &str) {
+    fn ref_toggle_enabled(rows: &mut [RefRow], id: &str) {
         if let Some(row) = rows.iter_mut().find(|row| row.0 == id) {
             row.3 = !row.3;
         }
@@ -12429,7 +12436,7 @@ mod resolve_startup_collection_tests {
                 let mut seen = std::collections::HashSet::new();
                 ids.into_iter()
                     .filter(|id| seen.insert(id.clone()))
-                    .map(|id| collection_with_id(id))
+                    .map(collection_with_id)
                     .collect::<Vec<_>>()
             })
             .prop_filter("must have at least one collection", |v| !v.is_empty())
@@ -12592,7 +12599,7 @@ mod navigation_toggle_preserves_composer_state_tests {
     fn arb_active_collection_id() -> impl Strategy<Value = Option<String>> {
         prop_oneof![
             3 => Just(None),
-            7 => "[a-z0-9]{1,20}".prop_map(|s| Some(s)),
+            7 => "[a-z0-9]{1,20}".prop_map(Some),
         ]
     }
 
@@ -12833,7 +12840,7 @@ mod collection_selection_workspace_property_tests {
                 let mut seen = std::collections::HashSet::new();
                 ids.into_iter()
                     .filter(|id| seen.insert(id.clone()))
-                    .map(|id| collection_with_id(id))
+                    .map(collection_with_id)
                     .collect::<Vec<_>>()
             })
             .prop_filter("must have at least one collection", |v| !v.is_empty())

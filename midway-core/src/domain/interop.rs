@@ -1192,16 +1192,10 @@ fn parse_openapi_security(
     security_schemes: Option<&Value>,
     warnings: &mut Vec<String>,
 ) -> Option<AuthConfig> {
-    let Some(requirements) = security else {
-        return None;
-    };
+    let requirements = security?;
 
-    let Some(first_requirement) = requirements.iter().find_map(Value::as_object) else {
-        return None;
-    };
-    let Some((scheme_name, _)) = first_requirement.iter().next() else {
-        return None;
-    };
+    let first_requirement = requirements.iter().find_map(Value::as_object)?;
+    let (scheme_name, _) = first_requirement.iter().next()?;
     let scheme = security_schemes
         .and_then(|value| value.get(scheme_name))
         .and_then(Value::as_object)?;

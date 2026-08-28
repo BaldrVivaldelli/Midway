@@ -946,7 +946,7 @@ impl SqliteRepository {
 
                 // Validate placement
                 validate_folder_placement(&folder_for_validation, &existing_folders)
-                    .map_err(|e| folder_validation_to_rusqlite_error(e))?;
+                    .map_err(folder_validation_to_rusqlite_error)?;
 
                 tx.execute(
                     "INSERT INTO folders (id, collection_id, parent_folder_id, name)
@@ -1039,7 +1039,7 @@ impl SqliteRepository {
 
                 // Validate placement with the new parent
                 validate_folder_placement(&moved_folder, &existing_folders)
-                    .map_err(|e| folder_validation_to_rusqlite_error(e))?;
+                    .map_err(folder_validation_to_rusqlite_error)?;
 
                 tx.execute(
                     "UPDATE folders SET parent_folder_id = ?2 WHERE id = ?1",
@@ -1119,7 +1119,7 @@ impl SqliteRepository {
                         .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
 
                     validate_request_folder_association(&request_collection_id, Some(&folder))
-                        .map_err(|e| folder_validation_to_rusqlite_error(e))?;
+                        .map_err(folder_validation_to_rusqlite_error)?;
                 }
 
                 tx.execute(
