@@ -73,7 +73,11 @@ fn score_item(normalized_query: &str, item: &CommandPaletteItem) -> i32 {
 
     let title = normalize(&item.title);
     let subtitle = normalize(item.subtitle.as_deref().unwrap_or(""));
-    let keywords: Vec<String> = item.keywords.iter().map(|keyword| normalize(keyword)).collect();
+    let keywords: Vec<String> = item
+        .keywords
+        .iter()
+        .map(|keyword| normalize(keyword))
+        .collect();
 
     if title == normalized_query {
         return 100;
@@ -87,18 +91,27 @@ fn score_item(normalized_query: &str, item: &CommandPaletteItem) -> i32 {
     if title.contains(normalized_query) {
         return 60;
     }
-    if keywords.iter().any(|keyword| keyword.starts_with(normalized_query)) {
+    if keywords
+        .iter()
+        .any(|keyword| keyword.starts_with(normalized_query))
+    {
         return 48;
     }
     if subtitle.contains(normalized_query) {
         return 36;
     }
-    if keywords.iter().any(|keyword| keyword.contains(normalized_query)) {
+    if keywords
+        .iter()
+        .any(|keyword| keyword.contains(normalized_query))
+    {
         return 28;
     }
 
     let title_tokens = title.split_whitespace();
-    if title_tokens.into_iter().any(|token| token.starts_with(normalized_query)) {
+    if title_tokens
+        .into_iter()
+        .any(|token| token.starts_with(normalized_query))
+    {
         return 24;
     }
 
@@ -113,7 +126,11 @@ fn score_item(normalized_query: &str, item: &CommandPaletteItem) -> i32 {
 /// - En otro caso, puntúa cada ítem con [`score_item`], descarta los que
 ///   obtienen score negativo, ordena por score descendente (y por título
 ///   ascendente en caso de empate) y trunca a `limit`.
-pub fn search_palette_items(items: &[CommandPaletteItem], query: &str, limit: usize) -> Vec<CommandPaletteItem> {
+pub fn search_palette_items(
+    items: &[CommandPaletteItem],
+    query: &str,
+    limit: usize,
+) -> Vec<CommandPaletteItem> {
     let normalized_query = normalize(query);
 
     if normalized_query.is_empty() {
@@ -127,10 +144,16 @@ pub fn search_palette_items(items: &[CommandPaletteItem], query: &str, limit: us
         .collect();
 
     scored.sort_by(|(left_score, left_item), (right_score, right_item)| {
-        right_score.cmp(left_score).then_with(|| left_item.title.cmp(&right_item.title))
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_item.title.cmp(&right_item.title))
     });
 
-    scored.into_iter().take(limit).map(|(_, item)| item.clone()).collect()
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, item)| item.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -148,7 +171,12 @@ mod tests {
 
     use super::*;
 
-    fn item(id: &str, title: &str, subtitle: Option<&str>, keywords: &[&str]) -> CommandPaletteItem {
+    fn item(
+        id: &str,
+        title: &str,
+        subtitle: Option<&str>,
+        keywords: &[&str],
+    ) -> CommandPaletteItem {
         CommandPaletteItem {
             id: id.to_string(),
             title: title.to_string(),
@@ -240,7 +268,12 @@ mod tests {
 
     #[test]
     fn score_no_match_returns_negative_one() {
-        let candidate = item("1", "collection panel", Some("workspace"), &["environments"]);
+        let candidate = item(
+            "1",
+            "collection panel",
+            Some("workspace"),
+            &["environments"],
+        );
         assert_eq!(score_item("zzz", &candidate), -1);
     }
 
@@ -311,7 +344,10 @@ mod tests {
 
     #[test]
     fn search_excludes_items_with_negative_score() {
-        let items = vec![item("1", "matching request", None, &[]), item("2", "no relation", None, &[])];
+        let items = vec![
+            item("1", "matching request", None, &[]),
+            item("2", "no relation", None, &[]),
+        ];
 
         let result = search_palette_items(&items, "request", 10);
 

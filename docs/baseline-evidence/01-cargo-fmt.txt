@@ -1,0 +1,7 @@
+error: no such command: `fmt`
+
+help: a command with a similar name exists: `fix`
+
+help: view all installed commands with `cargo --list`
+help: find a package to install `fmt` with `cargo search cargo-fmt`
+EXIT=101

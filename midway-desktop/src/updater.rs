@@ -212,9 +212,7 @@ fn parse_semver(raw: &str) -> AppResult<semver::Version> {
     let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);
 
     semver::Version::parse(normalized).map_err(|error| {
-        AppError::Validation(format!(
-            "Versión semántica inválida '{raw}': {error}"
-        ))
+        AppError::Validation(format!("Versión semántica inválida '{raw}': {error}"))
     })
 }
 
@@ -234,14 +232,11 @@ pub async fn fetch_manifest_from_url(
         .error_for_status()
         .map_err(AppError::from)?;
 
-    response
-        .json::<UpdateManifest>()
-        .await
-        .map_err(|error| {
-            AppError::Http(format!(
-                "No pude interpretar el manifiesto de actualización de {url}: {error}"
-            ))
-        })
+    response.json::<UpdateManifest>().await.map_err(|error| {
+        AppError::Http(format!(
+            "No pude interpretar el manifiesto de actualización de {url}: {error}"
+        ))
+    })
 }
 
 /// Descarga el manifiesto del canal indicado desde la fuente de releases de
@@ -645,10 +640,7 @@ pub struct SuccessfulInstall {
 impl SuccessfulInstall {
     /// Construye una instalación exitosa a partir de la versión en ejecución
     /// y la versión recién instalada.
-    pub fn new(
-        running_version: impl Into<String>,
-        installed_version: impl Into<String>,
-    ) -> Self {
+    pub fn new(running_version: impl Into<String>, installed_version: impl Into<String>) -> Self {
         Self {
             running_version: running_version.into(),
             installed_version: installed_version.into(),
@@ -742,9 +734,9 @@ impl PostInstallAction {
     /// usuario declina relanzar; `None` cuando se relanza de inmediato.
     pub fn pending_version(&self) -> Option<&str> {
         match self {
-            PostInstallAction::ContinueCurrentSession { pending_version, .. } => {
-                Some(pending_version)
-            }
+            PostInstallAction::ContinueCurrentSession {
+                pending_version, ..
+            } => Some(pending_version),
             PostInstallAction::Relaunch { .. } => None,
         }
     }
@@ -995,9 +987,10 @@ pub fn resolve_update_attempt(
 ) -> UpdateOutcome {
     match attempt {
         Ok(install) => UpdateOutcome::Installed(install),
-        Err(error) => {
-            UpdateOutcome::Failed(PreservedInstallation::new(installed_version.to_string(), error))
-        }
+        Err(error) => UpdateOutcome::Failed(PreservedInstallation::new(
+            installed_version.to_string(),
+            error,
+        )),
     }
 }
 
@@ -1016,8 +1009,14 @@ mod tests {
 
     #[test]
     fn manifest_file_name_matches_channel() {
-        assert_eq!(MidwayUpdateChannel::Stable.manifest_file_name(), "latest.json");
-        assert_eq!(MidwayUpdateChannel::Beta.manifest_file_name(), "latest-beta.json");
+        assert_eq!(
+            MidwayUpdateChannel::Stable.manifest_file_name(),
+            "latest.json"
+        );
+        assert_eq!(
+            MidwayUpdateChannel::Beta.manifest_file_name(),
+            "latest-beta.json"
+        );
     }
 
     #[test]
@@ -1043,13 +1042,19 @@ mod tests {
     #[test]
     fn current_platform_key_has_os_and_arch() {
         let key = current_platform_key();
-        assert!(key.contains('-'), "la clave de plataforma debe ser '{{os}}-{{arch}}': {key}");
+        assert!(
+            key.contains('-'),
+            "la clave de plataforma debe ser '{{os}}-{{arch}}': {key}"
+        );
         assert!(
             key.ends_with(std::env::consts::ARCH),
             "la clave debe terminar en la arquitectura actual: {key}"
         );
         // `macos` se normaliza a `darwin` para coincidir con el manifiesto.
-        assert!(!key.starts_with("macos"), "macos debe normalizarse a darwin: {key}");
+        assert!(
+            !key.starts_with("macos"),
+            "macos debe normalizarse a darwin: {key}"
+        );
     }
 
     // --- Comparación semver (camino nominal) ---
@@ -1285,15 +1290,20 @@ mod tests {
         );
 
         Mock::given(method("GET"))
-            .and(path("/aatv1/midway/releases/latest/download/latest-beta.json"))
+            .and(path(
+                "/aatv1/midway/releases/latest/download/latest-beta.json",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_string(manifest_json))
             .expect(1)
             .mount(&mock_server)
             .await;
 
         let client = reqwest::Client::new();
-        let url =
-            manifest_url_with_base(&mock_server.uri(), "aatv1/midway", MidwayUpdateChannel::Beta);
+        let url = manifest_url_with_base(
+            &mock_server.uri(),
+            "aatv1/midway",
+            MidwayUpdateChannel::Beta,
+        );
 
         let manifest = fetch_manifest_from_url(&client, &url)
             .await
@@ -1511,7 +1521,11 @@ mod tests {
         );
 
         // El artefacto descargado coincide en tamaño con el servido.
-        assert_eq!(downloaded.len(), total, "bytes descargados != bytes servidos");
+        assert_eq!(
+            downloaded.len(),
+            total,
+            "bytes descargados != bytes servidos"
+        );
 
         // Debe haberse emitido al menos el reporte inicial y el final.
         assert!(
@@ -1520,8 +1534,15 @@ mod tests {
         );
 
         // (b) El porcentaje final reportado es 100%.
-        let (_, last) = timeline.last().copied().expect("al menos un reporte de progreso");
-        assert_eq!(last.percent(), Some(100), "el porcentaje final debe ser 100%");
+        let (_, last) = timeline
+            .last()
+            .copied()
+            .expect("al menos un reporte de progreso");
+        assert_eq!(
+            last.percent(),
+            Some(100),
+            "el porcentaje final debe ser 100%"
+        );
         assert_eq!(last.downloaded_bytes, total as u64);
 
         // (a) Frecuencia mínima de 1 reporte por segundo: ninguna brecha entre
@@ -1576,11 +1597,9 @@ mod tests {
     // --- Verificación de checksum SHA256 (Tarea 13.5, Requisitos 7.4-7.6) ---
 
     /// SHA256 conocido de la cadena vacía (vector de prueba estándar).
-    const SHA256_EMPTY: &str =
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const SHA256_EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     /// SHA256 conocido de `b"abc"` (vector de prueba estándar del NIST).
-    const SHA256_ABC: &str =
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
     #[test]
     fn compute_sha256_hex_matches_known_vectors() {
@@ -1589,7 +1608,9 @@ mod tests {
         // Salida siempre de 64 caracteres hex en minúsculas.
         let hex = compute_sha256_hex(b"midway");
         assert_eq!(hex.len(), 64);
-        assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(hex
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
@@ -1600,7 +1621,10 @@ mod tests {
         );
         let sums = parse_sha256sums(&doc);
         assert_eq!(sums.len(), 2);
-        assert_eq!(sums.get("midway_linux_x86_64.AppImage").unwrap(), SHA256_ABC);
+        assert_eq!(
+            sums.get("midway_linux_x86_64.AppImage").unwrap(),
+            SHA256_ABC
+        );
         assert_eq!(
             sums.get("dist/midway_windows_x86_64_setup.exe").unwrap(),
             SHA256_EMPTY
@@ -1609,9 +1633,7 @@ mod tests {
 
     #[test]
     fn parse_sha256sums_ignores_blank_lines_and_binary_marker() {
-        let doc = format!(
-            "\n   \n{SHA256_ABC} *binary_marker_artifact.bin\n\n"
-        );
+        let doc = format!("\n   \n{SHA256_ABC} *binary_marker_artifact.bin\n\n");
         let sums = parse_sha256sums(&doc);
         assert_eq!(sums.len(), 1);
         assert_eq!(sums.get("binary_marker_artifact.bin").unwrap(), SHA256_ABC);
@@ -1714,8 +1736,14 @@ mod tests {
         assert_eq!(prompt.running_version(), "1.2.3");
 
         let message = prompt.message();
-        assert!(message.contains("1.3.0"), "el mensaje debe ofrecer la nueva versión: {message}");
-        assert!(message.contains("1.2.3"), "el mensaje debe mencionar la versión actual: {message}");
+        assert!(
+            message.contains("1.3.0"),
+            "el mensaje debe ofrecer la nueva versión: {message}"
+        );
+        assert!(
+            message.contains("1.2.3"),
+            "el mensaje debe mencionar la versión actual: {message}"
+        );
     }
 
     #[test]
@@ -1768,9 +1796,9 @@ mod tests {
             let action = resolve_relaunch_decision(&prompt, decision);
             let next_startup_version = match &action {
                 PostInstallAction::Relaunch { target_version } => target_version.as_str(),
-                PostInstallAction::ContinueCurrentSession { pending_version, .. } => {
-                    pending_version.as_str()
-                }
+                PostInstallAction::ContinueCurrentSession {
+                    pending_version, ..
+                } => pending_version.as_str(),
             };
             assert_eq!(next_startup_version, "1.3.0");
         }
@@ -1786,8 +1814,14 @@ mod tests {
         let download = UpdaterError::download("timeout de red tras 30s");
         assert_eq!(download.stage(), UpdateFailureStage::Download);
         let message = download.message();
-        assert!(message.contains("descarga"), "debe indicar la etapa: {message}");
-        assert!(message.contains("timeout de red"), "debe incluir la causa: {message}");
+        assert!(
+            message.contains("descarga"),
+            "debe indicar la etapa: {message}"
+        );
+        assert!(
+            message.contains("timeout de red"),
+            "debe incluir la causa: {message}"
+        );
         assert!(
             message.contains("sigue operativa") && message.contains("no se modificó"),
             "debe indicar que la instalación se preserva: {message}"
@@ -1801,9 +1835,8 @@ mod tests {
     #[test]
     fn updater_error_maps_from_app_errors_by_stage() {
         // Un error de descarga suele llegar como `AppError::Http`.
-        let download = UpdaterError::from_download_error(AppError::Http(
-            "error sending request".to_string(),
-        ));
+        let download =
+            UpdaterError::from_download_error(AppError::Http("error sending request".to_string()));
         assert_eq!(download.stage(), UpdateFailureStage::Download);
         assert!(download.detail().contains("error sending request"));
 
@@ -1820,17 +1853,17 @@ mod tests {
     fn resolve_update_attempt_failure_preserves_installed_version() {
         // Requisito 7.9 / Property 27: un fallo de descarga conserva la versión
         // instalada intacta y la deja operativa.
-        let outcome = resolve_update_attempt(
-            "1.2.3",
-            Err(UpdaterError::download("conexión rechazada")),
-        );
+        let outcome =
+            resolve_update_attempt("1.2.3", Err(UpdaterError::download("conexión rechazada")));
 
         assert!(outcome.is_failure());
         assert!(!outcome.is_installed());
         // La versión operativa tras el fallo es la que ya estaba instalada.
         assert_eq!(outcome.operational_installed_version(), "1.2.3");
 
-        let preserved = outcome.preserved().expect("un fallo debe preservar la instalación");
+        let preserved = outcome
+            .preserved()
+            .expect("un fallo debe preservar la instalación");
         assert_eq!(preserved.installed_version(), "1.2.3");
         assert!(preserved.is_installation_operational());
         assert_eq!(preserved.error().stage(), UpdateFailureStage::Download);
@@ -1860,10 +1893,7 @@ mod tests {
     fn resolve_update_attempt_success_reports_installed_version() {
         // Camino nominal: un intento exitoso reporta la instalación, no un
         // estado preservado.
-        let outcome = resolve_update_attempt(
-            "1.2.3",
-            Ok(SuccessfulInstall::new("1.2.3", "1.3.0")),
-        );
+        let outcome = resolve_update_attempt("1.2.3", Ok(SuccessfulInstall::new("1.2.3", "1.3.0")));
 
         assert!(outcome.is_installed());
         assert!(!outcome.is_failure());
@@ -1916,7 +1946,10 @@ mod tests {
         let install = SuccessfulInstall::new(current, latest);
         let outcome = resolve_update_attempt(current, Ok(install));
 
-        assert!(outcome.is_installed(), "el intento nominal debe instalar la nueva versión");
+        assert!(
+            outcome.is_installed(),
+            "el intento nominal debe instalar la nueva versión"
+        );
         assert!(!outcome.is_failure());
         assert!(outcome.preserved().is_none());
         // Tras el éxito, la versión operativa para el siguiente inicio es la
@@ -1955,7 +1988,9 @@ mod tests {
         // La versión operativa sigue siendo la que ya estaba instalada.
         assert_eq!(outcome.operational_installed_version(), current);
 
-        let preserved = outcome.preserved().expect("un fallo debe preservar la instalación");
+        let preserved = outcome
+            .preserved()
+            .expect("un fallo debe preservar la instalación");
         assert_eq!(preserved.installed_version(), current);
         assert!(preserved.is_installation_operational());
         assert_eq!(preserved.error().stage(), UpdateFailureStage::Verification);
@@ -2011,14 +2046,12 @@ mod tests {
                 Just("-rc.1".to_string()),
             ];
 
-            (0u64..=5, 0u64..=5, 0u64..=5, prerelease).prop_map(
-                |(major, minor, patch, pre)| {
-                    let raw = format!("{major}.{minor}.{patch}{pre}");
-                    let parsed = semver::Version::parse(&raw)
-                        .expect("el generador solo produce semver válido");
-                    (raw, parsed)
-                },
-            )
+            (0u64..=5, 0u64..=5, 0u64..=5, prerelease).prop_map(|(major, minor, patch, pre)| {
+                let raw = format!("{major}.{minor}.{patch}{pre}");
+                let parsed =
+                    semver::Version::parse(&raw).expect("el generador solo produce semver válido");
+                (raw, parsed)
+            })
         }
 
         proptest! {
@@ -2240,8 +2273,7 @@ mod tests {
         /// preservación debe cumplirse sea cual sea su forma.
         fn arb_installed_version() -> impl Strategy<Value = String> {
             prop_oneof![
-                (0u64..=20, 0u64..=20, 0u64..=20)
-                    .prop_map(|(a, b, c)| format!("{a}.{b}.{c}")),
+                (0u64..=20, 0u64..=20, 0u64..=20).prop_map(|(a, b, c)| format!("{a}.{b}.{c}")),
                 (0u64..=20, 0u64..=20, 0u64..=20)
                     .prop_map(|(a, b, c)| format!("{a}.{b}.{c}-beta.1")),
                 ".*",

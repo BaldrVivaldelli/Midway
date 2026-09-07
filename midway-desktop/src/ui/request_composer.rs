@@ -15,7 +15,8 @@ use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
 use iced::{font, Border, Color, Element, Font, Length};
 
 use midway_core::domain::http::{
-    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow, RequestPreview,
+    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow,
+    RequestPreview,
 };
 use midway_core::domain::testing::{AssertionOperator, AssertionSource, ResponseAssertion};
 
@@ -64,6 +65,19 @@ fn display_request_name(name: &str, method: HttpMethod) -> &str {
 /// controles cuando la ventana es pequeña.
 const BODY_TEXT_EDITOR_HEIGHT: f32 = 420.0;
 
+/// Etiqueta de la opción "ningún environment seleccionado" del `pick_list` de
+/// environment (Req 9.6).
+///
+/// Reemplaza el "No Environment" del baseline. `environment` se conserva porque
+/// es el término de dominio que ya usan el resto de los textos en español de la
+/// app ("El environment necesita un nombre.", "No hay environments todavía."):
+/// traducirlo solo acá rompería la consistencia en vez de arreglarla.
+///
+/// Vive en una constante porque la misma cadena se usa como opción de la lista
+/// y como placeholder, y la coincidencia entre ambas es lo que hace que la
+/// opción seleccionada se vea igual que el estado por defecto.
+const SIN_ENVIRONMENT_LABEL: &str = "Sin environment";
+
 /// Ítem del `pick_list` de environment: envuelve el id del environment
 /// (`None` = "sin environment") junto con el nombre a mostrar, ya que
 /// `pick_list` requiere `ToString` para renderizar cada opción y
@@ -96,14 +110,15 @@ pub fn toolbar<'a>(
     // --- URL bar: method pill + url input + send pill ---
     let m_color = method_color(draft.method);
     let m_text_color = contrast_text_color(m_color);
-    let method_picker = pick_list(
-        HttpMethod::ALL,
-        Some(draft.method),
-        |method| Message::RequestComposer(RequestComposerMessage::MethodChanged(method)),
-    )
+    let method_picker = pick_list(HttpMethod::ALL, Some(draft.method), |method| {
+        Message::RequestComposer(RequestComposerMessage::MethodChanged(method))
+    })
     .placeholder("GET")
     .text_size(body.size)
-    .font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+    .font(font_for(&TextStyle {
+        weight: iced::font::Weight::Bold,
+        ..body
+    }))
     .style(move |theme, status| {
         let mut style = pick_list::default(theme, status);
         style.border = Border {
@@ -132,9 +147,12 @@ pub fn toolbar<'a>(
 
     let send_text_color = contrast_text_color(accent);
     let send_button_content = if active_tab.sending {
-        text("Sending...").size(body.size).font(body_font)
+        text("Enviando…").size(body.size).font(body_font)
     } else {
-        text("Send").size(body.size).font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+        text("Enviar").size(body.size).font(font_for(&TextStyle {
+            weight: iced::font::Weight::Bold,
+            ..body
+        }))
     };
 
     let sending = active_tab.sending;
@@ -148,7 +166,10 @@ pub fn toolbar<'a>(
                 accent
             };
             let txt = if sending {
-                Color { a: 0.6, ..send_text_color }
+                Color {
+                    a: 0.6,
+                    ..send_text_color
+                }
             } else {
                 send_text_color
             };
@@ -165,7 +186,9 @@ pub fn toolbar<'a>(
     let send_button = if active_tab.sending {
         send_button
     } else {
-        send_button.on_press(Message::RequestComposer(RequestComposerMessage::SendPressed))
+        send_button.on_press(Message::RequestComposer(
+            RequestComposerMessage::SendPressed,
+        ))
     };
 
     let saved = active_tab
@@ -175,17 +198,25 @@ pub fn toolbar<'a>(
     let save_label = if saved { "Guardado" } else { "Guardar" };
     let save_button = button(text(save_label).size(body.size).font(body_font))
         .padding([ds.spacing.sm, ds.spacing.md])
-        .on_press(Message::RequestComposer(RequestComposerMessage::SaveRequested));
+        .on_press(Message::RequestComposer(
+            RequestComposerMessage::SaveRequested,
+        ));
 
     // Environment + settings on the right
     let environment_options: Vec<EnvironmentOption> = std::iter::once(EnvironmentOption {
         id: None,
-        name: "No Environment".to_string(),
+        name: SIN_ENVIRONMENT_LABEL.to_string(),
     })
-    .chain(state.workspace.environments.iter().map(|environment| EnvironmentOption {
-        id: Some(environment.id.clone()),
-        name: environment.name.clone(),
-    }))
+    .chain(
+        state
+            .workspace
+            .environments
+            .iter()
+            .map(|environment| EnvironmentOption {
+                id: Some(environment.id.clone()),
+                name: environment.name.clone(),
+            }),
+    )
     .collect();
 
     let selected_environment = environment_options
@@ -200,7 +231,7 @@ pub fn toolbar<'a>(
             Message::RequestComposer(RequestComposerMessage::EnvironmentChanged(option.id))
         },
     )
-    .placeholder("No Environment")
+    .placeholder(SIN_ENVIRONMENT_LABEL)
     .text_size(body.size)
     .font(body_font)
     .style(move |theme, status| {
@@ -214,7 +245,9 @@ pub fn toolbar<'a>(
 
     let settings_button = button(text("⚙").size(body.size).font(body_font))
         .padding(ds.spacing.sm)
-        .on_press(Message::RequestComposer(RequestComposerMessage::SettingsPressed));
+        .on_press(Message::RequestComposer(
+            RequestComposerMessage::SettingsPressed,
+        ));
 
     let url_bar = row![method_picker, url_input, send_button]
         .spacing(ds.spacing.sm)
@@ -290,11 +323,7 @@ pub fn editor<'a>(
 /// Tests (Tarea 5.8) ya tienen su editor real; solo Body sigue mostrando un
 /// placeholder.
 fn config_tabs<'a>(active_tab: &'a RequestTabState, ds: &DesignSystem) -> Element<'a, Message> {
-    let entries: Vec<(
-        RequestTab,
-        &'static str,
-        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
-    )> = vec![
+    let entries: Vec<tab_bar::TabEntry<'a, Message, RequestTab>> = vec![
         (
             RequestTab::Params,
             "Params",
@@ -353,7 +382,12 @@ pub enum AuthKind {
 }
 
 impl AuthKind {
-    const ALL: [AuthKind; 4] = [AuthKind::None, AuthKind::Bearer, AuthKind::Basic, AuthKind::ApiKey];
+    const ALL: [AuthKind; 4] = [
+        AuthKind::None,
+        AuthKind::Bearer,
+        AuthKind::Basic,
+        AuthKind::ApiKey,
+    ];
 
     /// Deriva el `AuthKind` correspondiente a la variante actual de
     /// `AuthConfig`, para preseleccionar el `pick_list`.
@@ -368,9 +402,13 @@ impl AuthKind {
 }
 
 impl std::fmt::Display for AuthKind {
+    /// `Bearer`, `Basic` y `API Key` son los nombres canónicos de los esquemas
+    /// de autenticación HTTP y se conservan tal cual (excepción registrada en
+    /// `docs/known-limitations.md`); lo que sí pasa a español es la opción que
+    /// no nombra un esquema sino su ausencia (Req 9.6).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
-            AuthKind::None => "None",
+            AuthKind::None => "Sin autenticación",
             AuthKind::Bearer => "Bearer",
             AuthKind::Basic => "Basic",
             AuthKind::ApiKey => "API Key",
@@ -391,7 +429,7 @@ impl std::fmt::Display for ApiKeyPlacementOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self.0 {
             ApiKeyPlacement::Header => "Header",
-            ApiKeyPlacement::Query => "Query Param",
+            ApiKeyPlacement::Query => "Parámetro de query",
         };
         f.write_str(label)
     }
@@ -420,31 +458,43 @@ fn auth_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
         AuthConfig::None => content,
         AuthConfig::Bearer { token } => content.push(
             text_input("Token", token)
-                .on_input(|token| Message::RequestComposer(RequestComposerMessage::BearerTokenChanged(token)))
+                .on_input(|token| {
+                    Message::RequestComposer(RequestComposerMessage::BearerTokenChanged(token))
+                })
                 .width(Length::Fill),
         ),
         AuthConfig::Basic { username, password } => content
             .push(
                 text_input("Usuario", username)
                     .on_input(|username| {
-                        Message::RequestComposer(RequestComposerMessage::BasicUsernameChanged(username))
+                        Message::RequestComposer(RequestComposerMessage::BasicUsernameChanged(
+                            username,
+                        ))
                     })
                     .width(Length::Fill),
             )
             .push(
                 text_input("Contraseña", password)
                     .on_input(|password| {
-                        Message::RequestComposer(RequestComposerMessage::BasicPasswordChanged(password))
+                        Message::RequestComposer(RequestComposerMessage::BasicPasswordChanged(
+                            password,
+                        ))
                     })
                     .secure(true)
                     .width(Length::Fill),
             ),
-        AuthConfig::ApiKey { key, value, placement } => {
+        AuthConfig::ApiKey {
+            key,
+            value,
+            placement,
+        } => {
             let placement_picker = pick_list(
                 API_KEY_PLACEMENT_OPTIONS,
                 Some(ApiKeyPlacementOption(*placement)),
                 |option: ApiKeyPlacementOption| {
-                    Message::RequestComposer(RequestComposerMessage::ApiKeyPlacementChanged(option.0))
+                    Message::RequestComposer(RequestComposerMessage::ApiKeyPlacementChanged(
+                        option.0,
+                    ))
                 },
             )
             .placeholder("Ubicación");
@@ -452,13 +502,17 @@ fn auth_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
             content
                 .push(
                     text_input("Nombre de la clave", key)
-                        .on_input(|key| Message::RequestComposer(RequestComposerMessage::ApiKeyKeyChanged(key)))
+                        .on_input(|key| {
+                            Message::RequestComposer(RequestComposerMessage::ApiKeyKeyChanged(key))
+                        })
                         .width(Length::Fill),
                 )
                 .push(
                     text_input("Valor", value)
                         .on_input(|value| {
-                            Message::RequestComposer(RequestComposerMessage::ApiKeyValueChanged(value))
+                            Message::RequestComposer(RequestComposerMessage::ApiKeyValueChanged(
+                                value,
+                            ))
                         })
                         .width(Length::Fill),
                 )
@@ -503,7 +557,7 @@ fn key_value_editor(rows: &[KeyValueRow], target: KeyValueTarget) -> Element<'_,
             })
         });
 
-        let key_input = text_input("Key", &row_data.key)
+        let key_input = text_input("Clave", &row_data.key)
             .on_input(move |key| {
                 Message::RequestComposer(RequestComposerMessage::KeyValueRowKeyChanged {
                     target,
@@ -513,7 +567,7 @@ fn key_value_editor(rows: &[KeyValueRow], target: KeyValueTarget) -> Element<'_,
             })
             .width(Length::Fill);
 
-        let value_input = text_input("Value", &row_data.value)
+        let value_input = text_input("Valor", &row_data.value)
             .on_input(move |value| {
                 Message::RequestComposer(RequestComposerMessage::KeyValueRowValueChanged {
                     target,
@@ -530,11 +584,13 @@ fn key_value_editor(rows: &[KeyValueRow], target: KeyValueTarget) -> Element<'_,
             },
         ));
 
-        content = content.push(row![enabled_checkbox, key_input, value_input, remove_button].spacing(8));
+        content =
+            content.push(row![enabled_checkbox, key_input, value_input, remove_button].spacing(8));
     }
 
-    let add_button = button(text("+ Agregar fila"))
-        .on_press(Message::RequestComposer(RequestComposerMessage::KeyValueRowAdded(target)));
+    let add_button = button(text("+ Agregar fila")).on_press(Message::RequestComposer(
+        RequestComposerMessage::KeyValueRowAdded(target),
+    ));
 
     content = content.push(add_button);
 
@@ -549,12 +605,16 @@ fn key_value_editor(rows: &[KeyValueRow], target: KeyValueTarget) -> Element<'_,
 struct BodyModeOption(BodyMode);
 
 impl std::fmt::Display for BodyModeOption {
+    /// `JSON` y `Form data` nombran formatos de payload (el segundo, el
+    /// `multipart/form-data` del protocolo) y se conservan; `None` y `Text`
+    /// pasan a español porque describen el modo, no un formato con nombre
+    /// propio (Req 9.6).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self.0 {
-            BodyMode::None => "None",
+            BodyMode::None => "Sin body",
             BodyMode::Json => "JSON",
-            BodyMode::Text => "Text",
-            BodyMode::FormData => "Form Data",
+            BodyMode::Text => "Texto",
+            BodyMode::FormData => "Form data",
         };
         f.write_str(label)
     }
@@ -576,8 +636,8 @@ struct FormDataFieldKindOption(FormDataFieldKind);
 impl std::fmt::Display for FormDataFieldKindOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self.0 {
-            FormDataFieldKind::Text => "Text",
-            FormDataFieldKind::File => "File",
+            FormDataFieldKind::Text => "Texto",
+            FormDataFieldKind::File => "Archivo",
         };
         f.write_str(label)
     }
@@ -604,7 +664,9 @@ fn body_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
     let mode_picker = pick_list(
         BODY_MODE_OPTIONS,
         Some(BodyModeOption(active_tab.draft.body.mode)),
-        |option: BodyModeOption| Message::RequestComposer(RequestComposerMessage::BodyModeChanged(option.0)),
+        |option: BodyModeOption| {
+            Message::RequestComposer(RequestComposerMessage::BodyModeChanged(option.0))
+        },
     )
     .placeholder("Modo de body");
 
@@ -617,7 +679,9 @@ fn body_tab(active_tab: &RequestTabState) -> Element<'_, Message> {
                 .body_editor
                 .view()
                 .height(Length::Fixed(BODY_TEXT_EDITOR_HEIGHT))
-                .on_action(|action| Message::RequestComposer(RequestComposerMessage::BodyTextAction(action)));
+                .on_action(|action| {
+                    Message::RequestComposer(RequestComposerMessage::BodyTextAction(action))
+                });
             content.push(editor)
         }
         BodyMode::FormData => content.push(form_data_editor(&active_tab.draft.body.form_data)),
@@ -646,7 +710,7 @@ fn form_data_editor(rows: &[FormDataRow]) -> Element<'_, Message> {
             })
         });
 
-        let key_input = text_input("Key", &row_data.key)
+        let key_input = text_input("Clave", &row_data.key)
             .on_input(move |key| {
                 Message::RequestComposer(RequestComposerMessage::FormDataRowKeyChanged {
                     row_id: id_for_key.clone(),
@@ -668,8 +732,8 @@ fn form_data_editor(rows: &[FormDataRow]) -> Element<'_, Message> {
         .placeholder("Tipo");
 
         let value_placeholder = match row_data.kind {
-            FormDataFieldKind::Text => "Value",
-            FormDataFieldKind::File => "Path del archivo",
+            FormDataFieldKind::Text => "Valor",
+            FormDataFieldKind::File => "Ruta del archivo",
         };
         let value_input = text_input(value_placeholder, &row_data.value)
             .on_input(move |value| {
@@ -687,12 +751,20 @@ fn form_data_editor(rows: &[FormDataRow]) -> Element<'_, Message> {
         ));
 
         content = content.push(
-            row![enabled_checkbox, key_input, kind_picker, value_input, remove_button].spacing(8),
+            row![
+                enabled_checkbox,
+                key_input,
+                kind_picker,
+                value_input,
+                remove_button
+            ]
+            .spacing(8),
         );
     }
 
-    let add_button =
-        button(text("+ Agregar campo")).on_press(Message::RequestComposer(RequestComposerMessage::FormDataRowAdded));
+    let add_button = button(text("+ Agregar campo")).on_press(Message::RequestComposer(
+        RequestComposerMessage::FormDataRowAdded,
+    ));
 
     content = content.push(add_button);
 
@@ -709,13 +781,16 @@ fn form_data_editor(rows: &[FormDataRow]) -> Element<'_, Message> {
 struct AssertionSourceOption(AssertionSource);
 
 impl std::fmt::Display for AssertionSourceOption {
+    /// `Status`, `Header` y `JSON Pointer` nombran partes del protocolo HTTP y
+    /// una especificación (RFC 6901) y se conservan; lo que se traduce es la
+    /// prosa que las acompaña (Req 9.6).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self.0 {
             AssertionSource::Status => "Status",
             AssertionSource::Header => "Header",
             AssertionSource::BodyText => "Body (texto)",
             AssertionSource::JsonPointer => "JSON Pointer",
-            AssertionSource::FinalUrl => "Final URL",
+            AssertionSource::FinalUrl => "URL final",
         };
         f.write_str(label)
     }
@@ -738,13 +813,13 @@ struct AssertionOperatorOption(AssertionOperator);
 impl std::fmt::Display for AssertionOperatorOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self.0 {
-            AssertionOperator::Equals => "Equals",
-            AssertionOperator::Contains => "Contains",
-            AssertionOperator::NotContains => "Not Contains",
-            AssertionOperator::Exists => "Exists",
-            AssertionOperator::NotExists => "Not Exists",
-            AssertionOperator::GreaterOrEqual => "Greater or Equal",
-            AssertionOperator::LessOrEqual => "Less or Equal",
+            AssertionOperator::Equals => "Es igual a",
+            AssertionOperator::Contains => "Contiene",
+            AssertionOperator::NotContains => "No contiene",
+            AssertionOperator::Exists => "Existe",
+            AssertionOperator::NotExists => "No existe",
+            AssertionOperator::GreaterOrEqual => "Mayor o igual que",
+            AssertionOperator::LessOrEqual => "Menor o igual que",
         };
         f.write_str(label)
     }
@@ -808,7 +883,7 @@ fn tests_tab_editor(assertions: &[ResponseAssertion]) -> Element<'_, Message> {
                 })
             },
         )
-        .placeholder("Source");
+        .placeholder("Origen");
 
         let operator_picker = pick_list(
             ASSERTION_OPERATOR_OPTIONS,
@@ -820,18 +895,21 @@ fn tests_tab_editor(assertions: &[ResponseAssertion]) -> Element<'_, Message> {
                 })
             },
         )
-        .placeholder("Operator");
+        .placeholder("Operador");
 
-        let selector_input = text_input("Selector (opcional)", &assertion.selector.clone().unwrap_or_default())
-            .on_input(move |selector| {
-                Message::RequestComposer(RequestComposerMessage::AssertionSelectorChanged {
-                    assertion_id: id_for_selector.clone(),
-                    selector,
-                })
+        let selector_input = text_input(
+            "Selector (opcional)",
+            &assertion.selector.clone().unwrap_or_default(),
+        )
+        .on_input(move |selector| {
+            Message::RequestComposer(RequestComposerMessage::AssertionSelectorChanged {
+                assertion_id: id_for_selector.clone(),
+                selector,
             })
-            .width(Length::Fill);
+        })
+        .width(Length::Fill);
 
-        let expected_input = text_input("Expected", &assertion.expected)
+        let expected_input = text_input("Valor esperado", &assertion.expected)
             .on_input(move |expected| {
                 Message::RequestComposer(RequestComposerMessage::AssertionExpectedChanged {
                     assertion_id: id_for_expected.clone(),
@@ -860,8 +938,9 @@ fn tests_tab_editor(assertions: &[ResponseAssertion]) -> Element<'_, Message> {
         );
     }
 
-    let add_button = button(text("+ Agregar assertion"))
-        .on_press(Message::RequestComposer(RequestComposerMessage::AssertionAdded));
+    let add_button = button(text("+ Agregar assertion")).on_press(Message::RequestComposer(
+        RequestComposerMessage::AssertionAdded,
+    ));
 
     content = content.push(add_button);
 
@@ -876,7 +955,7 @@ fn tests_tab_editor(assertions: &[ResponseAssertion]) -> Element<'_, Message> {
 /// Requisito 2.18).
 fn preview_view(preview: &RequestPreview) -> Element<'_, Message> {
     let mut content = column![
-        text("Preview").size(16),
+        text("Vista previa").size(16),
         text(format!("{} {}", preview.method, preview.resolved_url)),
         text("Headers:"),
     ]
@@ -908,19 +987,180 @@ mod presentation_tests {
 
     #[test]
     fn matching_method_prefix_is_not_repeated_in_the_title() {
-        assert_eq!(display_request_name("POST posts 1", HttpMethod::POST), "posts 1");
-        assert_eq!(display_request_name("post   posts 1", HttpMethod::POST), "posts 1");
+        assert_eq!(
+            display_request_name("POST posts 1", HttpMethod::POST),
+            "posts 1"
+        );
+        assert_eq!(
+            display_request_name("post   posts 1", HttpMethod::POST),
+            "posts 1"
+        );
     }
 
     #[test]
     fn meaningful_or_different_prefix_is_preserved() {
         assert_eq!(display_request_name("POST", HttpMethod::POST), "POST");
-        assert_eq!(display_request_name("GET posts 1", HttpMethod::POST), "GET posts 1");
-        assert_eq!(display_request_name("Public posts", HttpMethod::POST), "Public posts");
+        assert_eq!(
+            display_request_name("GET posts 1", HttpMethod::POST),
+            "GET posts 1"
+        );
+        assert_eq!(
+            display_request_name("Public posts", HttpMethod::POST),
+            "Public posts"
+        );
     }
 
     #[test]
     fn body_editor_uses_a_workspace_sized_height() {
-        assert!(BODY_TEXT_EDITOR_HEIGHT >= 360.0);
+        const { assert!(BODY_TEXT_EDITOR_HEIGHT >= 360.0) };
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    //! Feature: midway-baseline-audit-and-first-vertical, Tarea 11.3
+    //! Requisito 9.6.
+    //!
+    //! Tests de ejemplo del idioma de las etiquetas de los `pick_list` del
+    //! composer, que el baseline tenía en inglés. Lo que fijan es el texto
+    //! concreto de cada etiqueta, más un tripwire que impide que vuelvan las
+    //! formas en inglés que se retiraron.
+    //!
+    //! No es un detector de idioma: los términos que se conservan a propósito
+    //! (`Bearer`, `Basic`, `API Key`, `JSON`, `Header`, `Status`,
+    //! `JSON Pointer`, `Form data`) son nombres de esquemas de autenticación,
+    //! de formatos y de partes del protocolo HTTP, y están enumerados como
+    //! excepción deliberada en `docs/known-limitations.md`.
+    //!
+    //! Headless: cada test formatea una opción y compara la cadena. Sin
+    //! ventana, sin disco y sin red.
+
+    use super::*;
+
+    #[test]
+    fn auth_kind_labels_translate_only_the_absence_of_a_scheme() {
+        assert_eq!(AuthKind::None.to_string(), "Sin autenticación");
+        // Nombres canónicos de esquemas HTTP: se conservan (excepción registrada).
+        assert_eq!(AuthKind::Bearer.to_string(), "Bearer");
+        assert_eq!(AuthKind::Basic.to_string(), "Basic");
+        assert_eq!(AuthKind::ApiKey.to_string(), "API Key");
+    }
+
+    #[test]
+    fn api_key_placement_labels_are_in_spanish_except_the_protocol_term() {
+        assert_eq!(
+            ApiKeyPlacementOption(ApiKeyPlacement::Header).to_string(),
+            "Header"
+        );
+        assert_eq!(
+            ApiKeyPlacementOption(ApiKeyPlacement::Query).to_string(),
+            "Parámetro de query"
+        );
+    }
+
+    #[test]
+    fn body_mode_labels_translate_the_mode_and_keep_the_format_names() {
+        assert_eq!(BodyModeOption(BodyMode::None).to_string(), "Sin body");
+        assert_eq!(BodyModeOption(BodyMode::Json).to_string(), "JSON");
+        assert_eq!(BodyModeOption(BodyMode::Text).to_string(), "Texto");
+        assert_eq!(BodyModeOption(BodyMode::FormData).to_string(), "Form data");
+    }
+
+    #[test]
+    fn form_data_field_kind_labels_are_in_spanish() {
+        assert_eq!(
+            FormDataFieldKindOption(FormDataFieldKind::Text).to_string(),
+            "Texto"
+        );
+        assert_eq!(
+            FormDataFieldKindOption(FormDataFieldKind::File).to_string(),
+            "Archivo"
+        );
+    }
+
+    #[test]
+    fn assertion_operator_labels_are_fully_in_spanish() {
+        let labels: Vec<String> = ASSERTION_OPERATOR_OPTIONS
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Es igual a",
+                "Contiene",
+                "No contiene",
+                "Existe",
+                "No existe",
+                "Mayor o igual que",
+                "Menor o igual que",
+            ]
+        );
+    }
+
+    #[test]
+    fn assertion_source_labels_translate_the_prose_and_keep_the_spec_names() {
+        let labels: Vec<String> = ASSERTION_SOURCE_OPTIONS
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Status",
+                "Header",
+                "Body (texto)",
+                "JSON Pointer",
+                "URL final",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_environment_option_is_in_spanish() {
+        assert_eq!(SIN_ENVIRONMENT_LABEL, "Sin environment");
+    }
+
+    /// Tripwire: las etiquetas en inglés que esta tarea retiró no pueden
+    /// volver por un cambio posterior sin que un test falle. Se listan las
+    /// cadenas concretas del baseline, no un criterio de idioma.
+    #[test]
+    fn retired_english_labels_do_not_come_back() {
+        const RETIRED: &[&str] = &[
+            "None",
+            "Text",
+            "Form Data",
+            "File",
+            "Query Param",
+            "Equals",
+            "Contains",
+            "Not Contains",
+            "Exists",
+            "Not Exists",
+            "Greater or Equal",
+            "Less or Equal",
+            "Final URL",
+            "No Environment",
+        ];
+
+        let current: Vec<String> = AuthKind::ALL
+            .iter()
+            .map(ToString::to_string)
+            .chain(API_KEY_PLACEMENT_OPTIONS.iter().map(ToString::to_string))
+            .chain(BODY_MODE_OPTIONS.iter().map(ToString::to_string))
+            .chain(FORM_DATA_FIELD_KIND_OPTIONS.iter().map(ToString::to_string))
+            .chain(ASSERTION_SOURCE_OPTIONS.iter().map(ToString::to_string))
+            .chain(ASSERTION_OPERATOR_OPTIONS.iter().map(ToString::to_string))
+            .chain(std::iter::once(SIN_ENVIRONMENT_LABEL.to_string()))
+            .collect();
+
+        for retired in RETIRED {
+            assert!(
+                !current.iter().any(|label| label == retired),
+                "la etiqueta en inglés {retired:?} volvió a las opciones del composer"
+            );
+        }
     }
 }

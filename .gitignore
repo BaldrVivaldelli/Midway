@@ -30,6 +30,10 @@ AuthKey.p8
 .env.*
 !.env.example
 
+# Python bytecode de los scripts de evidencia (docs/baseline-evidence/)
+__pycache__/
+*.pyc
+
 # Editor / OS clutter
 .DS_Store
 Thumbs.db

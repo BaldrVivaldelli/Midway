@@ -1,0 +1,24 @@
+   Compiling libdbus-sys v0.2.7
+    Checking rustls v0.23.41
+   Compiling libsqlite3-sys v0.35.0
+   Compiling tiny-xlib v0.2.5
+   Compiling x11-dl v2.21.0
+    Checking dbus v0.9.12
+    Checking rusqlite v0.37.0
+    Checking softbuffer v0.4.8
+    Checking iced_tiny_skia v0.14.0
+    Checking iced_renderer v0.14.0
+    Checking tokio-rusqlite v0.7.0
+    Checking iced_widget v0.14.2
+    Checking dbus-secret-service v4.1.0
+    Checking keyring v3.6.3
+    Checking winit v0.30.13
+    Checking tokio-rustls v0.26.4
+    Checking hyper-rustls v0.27.9
+    Checking reqwest v0.12.28
+    Checking midway-core v0.1.0 (/home/avivaldelli/projects/personal/Midway/midway-core)
+    Checking iced_winit v0.14.0
+    Checking iced v0.14.0
+    Checking midway-desktop v0.1.0 (/home/avivaldelli/projects/personal/Midway/midway-desktop)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.68s
+EXIT=0

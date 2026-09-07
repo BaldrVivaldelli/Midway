@@ -4,6 +4,7 @@
 pub mod activity_bar;
 pub mod command_palette;
 pub mod design_system;
+pub mod empty_state;
 pub mod onboarding;
 pub mod request_composer;
 pub mod request_tree_pane;
@@ -11,6 +12,7 @@ pub mod response_inspector;
 pub mod save_request_modal;
 pub mod tab_bar;
 pub mod text_editor;
+pub mod theme_settings;
 pub mod top_bar;
 pub mod unsaved_changes_modal;
 pub mod workspace_crud_modal;

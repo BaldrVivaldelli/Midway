@@ -19,9 +19,11 @@ use midway_core::domain::http::ResolvedPair;
 use midway_core::domain::testing::AssertionResult;
 
 use crate::app::{
-    Message, Midway, ResponseInspectorMessage, ResponseInspectorTab, ResponseOutcome,
+    Message, Midway, RequestComposerMessage, ResponseInspectorMessage, ResponseInspectorTab,
+    ResponseOutcome,
 };
 use crate::ui::design_system::{status_color, DesignSystem, TextStyle};
+use crate::ui::empty_state;
 use crate::ui::tab_bar;
 
 fn font_for(style: &TextStyle) -> Font {
@@ -45,20 +47,20 @@ pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Messa
 
     match &tab_state.response {
         None => {
-            let ds = DesignSystem::for_mode(state.theme_mode);
-            container(
-                text("Sin respuesta aún")
-                    .size(ds.typography.body.size)
-                    .color(ds.palette.text_secondary),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
+            let ds = state.theme.design_system();
+            // Req 9.5: durante el periodo breve entre `SendPressed` y la
+            // llegada de la respuesta el área no queda en blanco ni repite
+            // "ejecutá el request" (que el usuario ya hizo): se muestra el
+            // mismo componente con `hint` de progreso.
+            let spec = if tab_state.sending {
+                empty_state::response_in_flight()
+            } else {
+                empty_state::no_response()
+            };
+            empty_state::view(spec, &ds)
         }
         Some(outcome) => {
-            let ds = DesignSystem::for_mode(state.theme_mode);
+            let ds = state.theme.design_system();
             let (status, status_text, duration_ms, size_bytes) = summary_line(outcome);
             let secondary = ds.typography.secondary;
             let secondary_font = font_for(&secondary);
@@ -70,11 +72,17 @@ pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Messa
             let status_clr = status_color(&ds, status);
 
             // Status badge: ✓ 201 Created  323 ms  65 bytes
-            let status_row = row![
-                text(check_icon).size(body.size).font(body_font).color(status_clr),
+            let status_line = row![
+                text(check_icon)
+                    .size(body.size)
+                    .font(body_font)
+                    .color(status_clr),
                 text(format!("{} {}", status, status_text))
                     .size(body.size)
-                    .font(font_for(&TextStyle { weight: iced::font::Weight::Bold, ..body }))
+                    .font(font_for(&TextStyle {
+                        weight: iced::font::Weight::Bold,
+                        ..body
+                    }))
                     .color(status_clr),
                 text(format!("{} ms", duration_ms))
                     .size(secondary.size)
@@ -91,12 +99,53 @@ pub fn view<'a>(state: &'a Midway, active_tab_index: usize) -> Element<'a, Messa
             // Response tabs
             let tabs = response_tabs(state, outcome, tab_state.response_tab, &ds);
 
-            column![status_row, tabs]
+            column![response_header(status_line, &ds), tabs]
                 .spacing(ds.spacing.sm)
                 .width(Length::Fill)
                 .into()
         }
     }
+}
+
+/// Cabecera diferenciada del inspector de respuesta (Req 9.1, diseño §8.2).
+///
+/// El panel entero se apoya en `surface_elevated` (lo aplica
+/// `app::debug_split_content`, que es quien lo compone); esta cabecera se
+/// separa de ese fondo con `background_secondary` y una línea inferior de 1 px
+/// en `border`, de modo que el resumen de la respuesta se lee como banda propia
+/// y no como la primera fila del contenido.
+///
+/// La línea es una franja propia y no `container::Style::border` porque
+/// `iced::Border` es uniforme en los cuatro lados y encajonaría la banda. Los
+/// dos colores salen de la escala existente de `DesignSystem`: no se agrega
+/// ningún color de marca (Req 9.8).
+fn response_header<'a>(
+    status_line: impl Into<Element<'a, Message>>,
+    ds: &DesignSystem,
+) -> Element<'a, Message> {
+    let background = ds.palette.background_secondary;
+    let border_color = ds.palette.border;
+
+    let band = container(status_line.into())
+        .width(Length::Fill)
+        .padding([ds.spacing.xs, ds.spacing.sm])
+        .style(move |_theme| container::Style {
+            background: Some(background.into()),
+            ..container::Style::default()
+        });
+
+    let bottom_border = container(column![])
+        .width(Length::Fill)
+        .height(Length::Fixed(1.0))
+        .style(move |_theme| container::Style {
+            background: Some(border_color.into()),
+            ..container::Style::default()
+        });
+
+    column![band, bottom_border]
+        .spacing(0)
+        .width(Length::Fill)
+        .into()
 }
 
 /// Fila con status, tiempo de respuesta y tamaño (Requisito 2.10). Los
@@ -149,11 +198,7 @@ fn response_tabs<'a>(
     ds: &DesignSystem,
 ) -> Element<'a, Message> {
     let ds_owned = *ds;
-    let entries: Vec<(
-        ResponseInspectorTab,
-        &'static str,
-        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
-    )> = vec![
+    let entries: Vec<tab_bar::TabEntry<'a, Message, ResponseInspectorTab>> = vec![
         (
             ResponseInspectorTab::Body,
             "Body",
@@ -172,7 +217,7 @@ fn response_tabs<'a>(
         (
             ResponseInspectorTab::Tests,
             "Tests",
-            Box::new(move || tests_tab(outcome)),
+            Box::new(move || tests_tab(outcome, &ds_owned)),
         ),
     ];
 
@@ -302,15 +347,20 @@ fn body_tab<'a>(outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, 
 /// `final_url` de la respuesta activa (Req 9.2, 9.3).
 ///
 /// - ≥1 cookie: filas nombre/valor en el orden devuelto por el jar.
-/// - 0 cookies: estado vacío "No hay cookies almacenadas" (con precedencia, Req 9.3).
-fn cookies_tab<'a>(state: &'a Midway, outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, Message> {
+/// - 0 cookies: estado vacío "Sin cookies almacenadas" (con precedencia, Req
+///   9.3), renderizado por [`crate::ui::empty_state`].
+fn cookies_tab<'a>(
+    state: &'a Midway,
+    outcome: &'a ResponseOutcome,
+    ds: &DesignSystem,
+) -> Element<'a, Message> {
     let cookies = state
         .app_state
         .cookie_jar
         .read_for_url(&outcome.response.final_url);
 
     if cookies.is_empty() {
-        return text("No hay cookies almacenadas").into();
+        return empty_state::view(empty_state::no_cookies(), ds);
     }
 
     let body = ds.typography.body;
@@ -320,12 +370,8 @@ fn cookies_tab<'a>(state: &'a Midway, outcome: &'a ResponseOutcome, ds: &DesignS
         .into_iter()
         .map(|cookie: CookiePair| {
             row![
-                text(cookie.name)
-                    .size(body.size)
-                    .font(body_font),
-                text(cookie.value)
-                    .size(body.size)
-                    .font(body_font),
+                text(cookie.name).size(body.size).font(body_font),
+                text(cookie.value).size(body.size).font(body_font),
             ]
             .spacing(ds.spacing.sm)
             .into()
@@ -358,19 +404,29 @@ fn header_rows_data(outcome: &ResponseOutcome) -> Vec<(String, String)> {
 
 /// Tab Tests: para cada `AssertionResult`, muestra si aprobó o falló junto
 /// con su nombre, valor esperado, valor actual y mensaje (Requisito 2.11).
-fn tests_tab(outcome: &ResponseOutcome) -> Element<'_, Message> {
+///
+/// Sin assertions, el estado vacío ofrece "Agregar assertion", que despacha
+/// `RequestComposerMessage::AssertionAdded`: el mismo mensaje que el botón
+/// "+ Agregar assertion" del editor de la tab Tests del `Request_Composer`, así
+/// que la acción agrega una assertion real al draft (Req 14.2).
+fn tests_tab<'a>(outcome: &'a ResponseOutcome, ds: &DesignSystem) -> Element<'a, Message> {
     if outcome.assertions.results.is_empty() {
-        return text("Sin assertions configuradas").into();
+        return empty_state::view(
+            empty_state::no_assertions(Message::RequestComposer(
+                RequestComposerMessage::AssertionAdded,
+            )),
+            ds,
+        );
     }
 
     let rows: Vec<Element<'_, Message>> = assertion_rows_data(outcome)
         .into_iter()
         .map(|(passed, name, expected, actual, message)| {
-            let status_label = if passed { "PASSED" } else { "FAILED" };
+            let status_label = assertion_verdict_label(passed);
             column![
                 row![text(status_label), text(name)].spacing(8),
-                text(format!("esperado: {}", expected)),
-                text(format!("actual: {}", actual)),
+                text(format!("valor esperado: {}", expected)),
+                text(format!("valor obtenido: {}", actual)),
                 text(message),
             ]
             .spacing(2)
@@ -379,6 +435,18 @@ fn tests_tab(outcome: &ResponseOutcome) -> Element<'_, Message> {
         .collect();
 
     column(rows).spacing(8).into()
+}
+
+/// Veredicto de una assertion en el idioma de la interfaz (Req 9.6).
+///
+/// Reemplaza el `"PASSED"`/`"FAILED"` del baseline. Función aparte de la vista
+/// para poder fijar ambas etiquetas en un test sin construir un `Element`.
+fn assertion_verdict_label(passed: bool) -> &'static str {
+    if passed {
+        "PASÓ"
+    } else {
+        "FALLÓ"
+    }
 }
 
 /// Extrae, para cada `AssertionResult`, la tupla
@@ -624,5 +692,28 @@ mod tests {
         assert_eq!(format_bytes(512), "512 bytes");
         assert_eq!(format_bytes(2048), "2.0 KB");
         assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    // -----------------------------------------------------------------
+    // Idioma del veredicto de assertions (Tarea 11.3, Requisito 9.6).
+    //
+    // El baseline rotulaba cada resultado con "PASSED"/"FAILED" en texto
+    // visible. Los dos tests siguientes fijan las etiquetas en español y
+    // dejan un tripwire para que las de inglés no vuelvan.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn assertion_verdict_labels_are_in_spanish() {
+        assert_eq!(assertion_verdict_label(true), "PASÓ");
+        assert_eq!(assertion_verdict_label(false), "FALLÓ");
+    }
+
+    #[test]
+    fn retired_english_verdict_labels_do_not_come_back() {
+        for passed in [true, false] {
+            let label = assertion_verdict_label(passed);
+            assert_ne!(label, "PASSED");
+            assert_ne!(label, "FAILED");
+        }
     }
 }

@@ -79,8 +79,8 @@ pub fn evaluate_response_assertions(
             id: assertion.id.clone(),
             name: assertion.name.clone(),
             passed,
-            source: assertion.source.clone(),
-            operator: assertion.operator.clone(),
+            source: assertion.source,
+            operator: assertion.operator,
             selector: assertion.selector.clone(),
             expected: assertion.expected.clone(),
             actual,
@@ -96,7 +96,8 @@ fn evaluate_single_assertion(
     response: &ResponseEnvelope,
     assertion: &ResponseAssertion,
 ) -> (bool, Option<String>, String) {
-    let actual_value = extract_actual_value(response, &assertion.source, assertion.selector.as_deref());
+    let actual_value =
+        extract_actual_value(response, &assertion.source, assertion.selector.as_deref());
 
     match assertion.operator {
         AssertionOperator::Exists => match actual_value {
@@ -125,11 +126,36 @@ fn evaluate_single_assertion(
             ),
             Err(message) => (false, None, message),
         },
-        AssertionOperator::Equals => compare_text(actual_value, &assertion.expected, |actual, expected| actual == expected, "igual"),
-        AssertionOperator::Contains => compare_text(actual_value, &assertion.expected, |actual, expected| actual.contains(expected), "contener"),
-        AssertionOperator::NotContains => compare_text(actual_value, &assertion.expected, |actual, expected| !actual.contains(expected), "no contener"),
-        AssertionOperator::GreaterOrEqual => compare_numbers(actual_value, &assertion.expected, |actual, expected| actual >= expected, "ser mayor o igual"),
-        AssertionOperator::LessOrEqual => compare_numbers(actual_value, &assertion.expected, |actual, expected| actual <= expected, "ser menor o igual"),
+        AssertionOperator::Equals => compare_text(
+            actual_value,
+            &assertion.expected,
+            |actual, expected| actual == expected,
+            "igual",
+        ),
+        AssertionOperator::Contains => compare_text(
+            actual_value,
+            &assertion.expected,
+            |actual, expected| actual.contains(expected),
+            "contener",
+        ),
+        AssertionOperator::NotContains => compare_text(
+            actual_value,
+            &assertion.expected,
+            |actual, expected| !actual.contains(expected),
+            "no contener",
+        ),
+        AssertionOperator::GreaterOrEqual => compare_numbers(
+            actual_value,
+            &assertion.expected,
+            |actual, expected| actual >= expected,
+            "ser mayor o igual",
+        ),
+        AssertionOperator::LessOrEqual => compare_numbers(
+            actual_value,
+            &assertion.expected,
+            |actual, expected| actual <= expected,
+            "ser menor o igual",
+        ),
     }
 }
 
@@ -218,7 +244,10 @@ fn extract_actual_value(
             let header_name = selector
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| "La aserción sobre header necesita un selector con el nombre del header.".to_string())?;
+                .ok_or_else(|| {
+                    "La aserción sobre header necesita un selector con el nombre del header."
+                        .to_string()
+                })?;
 
             Ok(find_header(&response.headers, header_name).map(|pair| pair.value.clone()))
         }
@@ -226,7 +255,9 @@ fn extract_actual_value(
             let pointer = selector
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| "La aserción sobre JSON necesita un selector con un JSON Pointer.".to_string())?;
+                .ok_or_else(|| {
+                    "La aserción sobre JSON necesita un selector con un JSON Pointer.".to_string()
+                })?;
 
             let json = serde_json::from_str::<Value>(&response.body_text)
                 .map_err(|error| format!("No se pudo parsear el body como JSON: {error}"))?;
@@ -248,7 +279,8 @@ fn json_value_to_string(value: &Value) -> String {
         Value::Bool(boolean) => boolean.to_string(),
         Value::Number(number) => number.to_string(),
         Value::String(text) => text.clone(),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string_pretty(value)
-            .unwrap_or_else(|_| value.to_string()),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
     }
 }

@@ -9,11 +9,45 @@ on:
 permissions:
   contents: read
 
+# Este workflow verifica el workspace Rust (`midway-core` y `midway-desktop`) en cada
+# pull request y en cada push a `main`, con dos jobs sobre `ubuntu-22.04`:
+#
+#   - `static-checks`: formato (`cargo fmt --all -- --check`) y lints
+#     (`cargo clippy --workspace --all-targets -- -D warnings`). Es la única
+#     verificación real de formato y lints del proyecto: en el entorno de desarrollo
+#     registrado en `docs/product-audit.md` rustfmt y clippy no están instalados, por lo
+#     que su estado local figura como `Sin_Herramienta`.
+#   - `workspace`: `cargo check --workspace` y `cargo test --workspace`.
+#
+# El workflow no instala ni invoca Node.js, npm ni ninguna herramienta JavaScript,
+# incluidas las de documentación y de reportes.
+#
+# Las cuatro dependencias de sistema del paso "Install Linux system dependencies" se
+# instalan en ambos jobs y permanecen hasta que la verificación empírica por dependencia
+# (`docs/product-audit.md`) determine si alguna puede quitarse. No se afirma aquí que
+# sean necesarias ni que sean superfluas: todavía no se midió.
 jobs:
-  # Compila y testea el workspace Rust completo: midway-core y midway-desktop.
-  # Tras la Fase 8, el frontend TypeScript/React (`src/`) y el crate `midway`
-  # (`src-tauri`) fueron eliminados, por lo que ya no existe job de frontend ni
-  # tooling de Node/npm en CI: la aplicación es 100% Rust sobre iced.
+  static-checks:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable with rustfmt and clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Cargo fmt (check)
+        run: cargo fmt --all -- --check
+
+      - name: Cargo clippy (workspace, all targets, warnings as errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   workspace:
     runs-on: ubuntu-22.04
     steps:

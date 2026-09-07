@@ -20,24 +20,27 @@ use iced::{Element, Length, Subscription, Task};
 use tokio::sync::oneshot;
 
 use midway_core::domain::http::{
-    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow, RequestDraft,
-    RequestPreview, ResponseEnvelope,
+    ApiKeyPlacement, AuthConfig, BodyMode, FormDataFieldKind, FormDataRow, HttpMethod, KeyValueRow,
+    RequestDraft, RequestPreview, ResponseEnvelope,
 };
 use midway_core::domain::interop::{
-    detect_import_format, export_postman_collection, import_openapi_document, import_postman_collection,
-    make_native_bundle, parse_json_or_yaml_payload, parse_native_bundle, ImportedRequest, NativeWorkspaceBundle,
-    WorkspaceExportFormat, WorkspaceImportFormat,
+    detect_import_format, export_postman_collection, import_openapi_document,
+    import_postman_collection, make_native_bundle, parse_json_or_yaml_payload, parse_native_bundle,
+    ImportedRequest, NativeWorkspaceBundle, WorkspaceExportFormat, WorkspaceImportFormat,
 };
 use midway_core::domain::interpolation::{resolve_request, SecretRenderMode};
 use midway_core::domain::preview::make_preview;
-use midway_core::domain::runner::{CollectionRunProgressEvent, CollectionRunReport, RunCollectionInput};
+use midway_core::domain::runner::{
+    CollectionRunPhase, CollectionRunProgressEvent, CollectionRunReport, RunCollectionInput,
+};
 use midway_core::domain::secrets::collect_secret_aliases;
 use midway_core::domain::testing::{
-    evaluate_response_assertions, AssertionOperator, AssertionReport, AssertionSource, ResponseAssertion,
+    evaluate_response_assertions, AssertionOperator, AssertionReport, AssertionSource,
+    ResponseAssertion,
 };
 use midway_core::domain::workspace::{
-    CollectionSummary, CollectionWithRequests, EnvironmentRecord, Folder, SaveEnvironmentInput, SaveFolderInput,
-    SaveRequestInput, WorkspaceSnapshot,
+    CollectionSummary, CollectionWithRequests, EnvironmentRecord, Folder, SaveEnvironmentInput,
+    SaveFolderInput, SaveRequestInput, WorkspaceSnapshot,
 };
 
 use crate::command_palette;
@@ -45,9 +48,11 @@ use crate::curl::{self, create_blank_draft};
 use crate::diagnostics::{self, CrashRecord};
 use crate::state::AppState;
 use crate::ui::design_system::{DesignSystem, ThemeMode};
+use crate::ui::empty_state;
 use crate::ui::request_composer::{self, AuthKind, KeyValueTarget};
 use crate::ui::response_inspector;
 use crate::ui::text_editor::TextEditorState;
+use crate::ui::theme_settings::{self, ThemeEvent, ThemeSettingsState};
 use crate::ui::workspace_panel;
 
 /// Mensaje de nivel superior de `midway-desktop`, agrupado por área (patrón
@@ -92,11 +97,45 @@ pub enum Message {
 // ---------------------------------------------------------------------------
 
 /// Divisor que está siendo arrastrado actualmente.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `ResponseHeight` transporta `area_bottom_y`, el borde inferior del área
+/// Debug en coordenadas de ventana. El listener global de eventos solo conoce
+/// la posición del cursor en la ventana, así que la geometría del área tiene
+/// que viajar desde la vista —que sí la recibe del `responsive`— hasta el
+/// reducer. Viaja en el mensaje de inicio de arrastre y queda guardada acá
+/// mientras el arrastre está activo, en vez de en un campo aparte de `Midway`
+/// que habría que mantener sincronizado con `panel_dragging`.
+///
+/// `PanelDragState` identifica **cuál** divisor está en juego; la geometría que
+/// `ResponseHeight` acarrea no forma parte de esa identidad. Por eso `PartialEq`
+/// está escrito a mano y compara solo el divisor: `panel_hovered` y
+/// `panel_dragging` se comparan por divisor en la vista, y un cambio de tamaño
+/// de ventana no debe leerse como "otro divisor". Ese `PartialEq` es reflexivo
+/// (dos `ResponseHeight` cualesquiera son iguales, incluso con `NaN` dentro),
+/// de modo que `Eq` sigue siendo válido.
+#[derive(Debug, Clone, Copy)]
 pub enum PanelDragState {
     TreeMain,
     RequestResponse,
+    /// Divisor horizontal entre el editor de request y el inspector de
+    /// respuesta en la disposición apilada del área Debug.
+    ResponseHeight {
+        area_bottom_y: f32,
+    },
 }
+
+impl PartialEq for PanelDragState {
+    fn eq(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::TreeMain, Self::TreeMain)
+                | (Self::RequestResponse, Self::RequestResponse)
+                | (Self::ResponseHeight { .. }, Self::ResponseHeight { .. })
+        )
+    }
+}
+
+impl Eq for PanelDragState {}
 
 /// Mensajes del sistema de redimensionamiento de paneles.
 #[derive(Debug, Clone)]
@@ -105,12 +144,23 @@ pub enum PanelResizeMessage {
     TreeDividerDragStarted,
     /// El usuario presionó el divider entre request y response.
     RequestResponseDividerDragStarted,
+    /// El usuario presionó el divider horizontal entre editor de request e
+    /// inspector de respuesta (disposición apilada).
+    ///
+    /// `area_bottom_y` es el borde inferior del área Debug en coordenadas de
+    /// ventana, calculado por la vista a partir del `Size` que ya recibe del
+    /// `responsive`: es lo que le permite al reducer convertir la Y del cursor
+    /// en alto del panel de respuesta sin estado nuevo.
+    ResponseHeightDividerDragStarted { area_bottom_y: f32 },
     /// El puntero entró en la zona de agarre de un divisor.
     DividerHovered(PanelDragState),
     /// El puntero salió de la zona de agarre de un divisor.
     DividerUnhovered(PanelDragState),
-    /// El ratón se movió durante un arrastre activo (coordenada de ventana).
-    DividerDragged(f32),
+    /// El ratón se movió durante un arrastre activo (coordenadas de ventana).
+    ///
+    /// Transporta los dos ejes: los divisores verticales usan solo `x` (su
+    /// comportamiento no cambia) y el horizontal usa solo `y`.
+    DividerDragged { x: f32, y: f32 },
     /// El usuario soltó el botón del ratón (finaliza cualquier arrastre).
     DividerDragEnded,
 }
@@ -247,10 +297,16 @@ pub enum RequestComposerMessage {
     },
     /// El usuario alternó el checkbox "enabled" de una fila del editor
     /// key/value (Tarea 5.6, Requisito 3.8), identificada por `row_id`.
-    KeyValueRowEnabledToggled { target: KeyValueTarget, row_id: String },
+    KeyValueRowEnabledToggled {
+        target: KeyValueTarget,
+        row_id: String,
+    },
     /// El usuario presionó el botón de eliminar de una fila del editor
     /// key/value (Tarea 5.6, Requisito 3.8), identificada por `row_id`.
-    KeyValueRowRemoved { target: KeyValueTarget, row_id: String },
+    KeyValueRowRemoved {
+        target: KeyValueTarget,
+        row_id: String,
+    },
     /// El usuario presionó "Agregar assertion" en la tab Tests (Tarea 5.8,
     /// Requisito 3.9). Agrega una `domain::testing::ResponseAssertion`
     /// nueva (source `Status`, operator `Equals`, sin selector, `expected`
@@ -281,10 +337,16 @@ pub enum RequestComposerMessage {
     /// Tests (Tarea 5.8, Requisito 3.9), identificada por `assertion_id`.
     /// Un texto vacío se traduce a `None` (sin selector), acorde a la
     /// semántica de `ResponseAssertion::selector: Option<String>`.
-    AssertionSelectorChanged { assertion_id: String, selector: String },
+    AssertionSelectorChanged {
+        assertion_id: String,
+        selector: String,
+    },
     /// El usuario editó el `expected` de una assertion de la tab Tests
     /// (Tarea 5.8, Requisito 3.9), identificada por `assertion_id`.
-    AssertionExpectedChanged { assertion_id: String, expected: String },
+    AssertionExpectedChanged {
+        assertion_id: String,
+        expected: String,
+    },
     /// El usuario presionó el botón de eliminar de una assertion de la tab
     /// Tests (Tarea 5.8, Requisito 3.9), identificada por `assertion_id`.
     AssertionRemoved { assertion_id: String },
@@ -318,7 +380,10 @@ pub enum RequestComposerMessage {
     FormDataRowEnabledToggled { row_id: String },
     /// El usuario cambió el tipo (Text/File) de una fila del editor
     /// FormData, identificada por `row_id`.
-    FormDataRowKindChanged { row_id: String, kind: FormDataFieldKind },
+    FormDataRowKindChanged {
+        row_id: String,
+        kind: FormDataFieldKind,
+    },
     /// El usuario presionó el botón de eliminar de una fila del editor
     /// FormData, identificada por `row_id`.
     FormDataRowRemoved { row_id: String },
@@ -561,12 +626,11 @@ pub enum PaletteMessage {
     Dismissed,
 }
 
-#[derive(Debug, Clone)]
-pub enum ThemeMessage {
-    /// El usuario activó el control de cambio de tema (Light/Dark), lo que
-    /// dispara el toggle de `state.theme_mode`.
-    Toggled,
-}
+/// Mensajes de la vertical Tema/Ajustes. La definición vive en
+/// `crate::ui::theme_settings` (Tarea 7.1, Req 8.1): la App_Raíz los
+/// **envuelve** en `Message::Theme`, no los define. Se reexporta acá para no
+/// romper los sitios de construcción existentes (`ui/top_bar.rs`).
+pub use crate::ui::theme_settings::ThemeMessage;
 
 #[derive(Debug, Clone)]
 pub enum SessionMessage {
@@ -716,7 +780,7 @@ pub enum TopBarMode {
 
 /// Estado del Request_Tree_Pane: filtro de texto y estado de expandido/
 /// colapsado por folder (Req 5.3, 5.11).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TreeViewState {
     /// Texto actual del campo de filtro.
     pub filter: String,
@@ -753,20 +817,6 @@ pub struct RequestDragState {
 pub enum RequestDropTarget {
     Root,
     Folder(String),
-}
-
-impl Default for TreeViewState {
-    fn default() -> Self {
-        Self {
-            filter: String::new(),
-            collapsed: HashSet::new(),
-            collapsed_snapshot: None,
-            error: None,
-            request_drag: None,
-            moving_request_id: None,
-            hovered_item: None,
-        }
-    }
 }
 
 /// Estado del prompt de creación de colección del Activity_Bar (Req 2.5,
@@ -827,9 +877,7 @@ pub struct WorkspaceCrudDialogState {
 /// Mensajes del ABM de colecciones, carpetas y requests.
 #[derive(Debug, Clone)]
 pub enum WorkspaceCrudMessage {
-    CreateFolderRequested {
-        parent_folder_id: Option<String>,
-    },
+    CreateFolderRequested { parent_folder_id: Option<String> },
     RenameCollectionRequested(String),
     DeleteCollectionRequested(String),
     RenameFolderRequested(String),
@@ -1224,7 +1272,9 @@ pub struct UnsavedChangesPromptState {
 /// handle (mismo puntero `Arc`, mismo hash) no reconstruyen el stream, por
 /// lo que ese `take` solo ocurre una vez por ejecución.
 #[derive(Clone)]
-pub struct ProgressReceiverHandle(Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<CollectionRunProgressEvent>>>>);
+pub struct ProgressReceiverHandle(
+    Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<CollectionRunProgressEvent>>>>,
+);
 
 impl ProgressReceiverHandle {
     pub fn new(receiver: mpsc::UnboundedReceiver<CollectionRunProgressEvent>) -> Self {
@@ -1375,9 +1425,11 @@ pub struct Midway {
     pub palette: PaletteState,
     pub runner: Option<CollectionRunnerState>,
     pub session: SessionStoreState,
-    /// Tema activo de la aplicación, persistido por el autosave existente
-    /// dentro de `SessionSnapshot`.
-    pub theme_mode: ThemeMode,
+    /// Estado de la vertical Tema/Ajustes
+    /// (`crate::ui::theme_settings`). El modo activo sigue persistiéndose
+    /// por el autosave existente dentro de `SessionSnapshot`: el cambio es
+    /// de estado en memoria, no de esquema (Tarea 7.1, Req 8.1).
+    pub theme: ThemeSettingsState,
     /// Qué muestra el `Main_Content_Pane` (tab de request activa o sección
     /// del Sidebar). Puramente de presentación, no persistido.
     pub main_content_focus: MainContentFocus,
@@ -1438,13 +1490,15 @@ impl Midway {
             }
         }
 
-        let (tabs, active_tab, session_active_collection_id) = restore_pending_session(&mut session);
-        let theme_mode = session.theme_mode;
+        let (tabs, active_tab, session_active_collection_id) =
+            restore_pending_session(&mut session);
+        let theme = ThemeSettingsState::new(session.theme_mode);
 
         // El snapshot real se carga inmediatamente después de `Midway::new`.
         // Conservamos temporalmente el id de sesión para poder validarlo
         // contra las colecciones cuando llegue `WorkspaceSnapshotLoaded`.
-        let workspace_collections: Vec<midway_core::domain::workspace::CollectionWithRequests> = Vec::new();
+        let workspace_collections: Vec<midway_core::domain::workspace::CollectionWithRequests> =
+            Vec::new();
         let active_collection_id = session_active_collection_id;
 
         Self {
@@ -1462,7 +1516,7 @@ impl Midway {
             palette: PaletteState::default(),
             runner: None,
             session,
-            theme_mode,
+            theme,
             main_content_focus: MainContentFocus::default(),
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
@@ -1543,7 +1597,11 @@ fn restore_pending_session(
     let session_active_collection_id = snapshot.active_collection_id;
 
     if tabs.is_empty() {
-        return (vec![RequestTabState::blank()], Some(0), session_active_collection_id);
+        return (
+            vec![RequestTabState::blank()],
+            Some(0),
+            session_active_collection_id,
+        );
     }
 
     let active_tab = snapshot
@@ -1633,7 +1691,9 @@ impl RequestTabState {
 fn default_tab_for_method(method: HttpMethod) -> RequestTab {
     match method {
         HttpMethod::GET | HttpMethod::HEAD | HttpMethod::OPTIONS => RequestTab::Params,
-        HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH | HttpMethod::DELETE => RequestTab::Body,
+        HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH | HttpMethod::DELETE => {
+            RequestTab::Body
+        }
     }
 }
 
@@ -1786,9 +1846,11 @@ where
                 format!("{component_name}: {message}"),
                 None,
             );
-            text(format!("Error en el componente {component_name}: ver Diagnostics"))
-                .color(iced::Color::from_rgb(0.8, 0.1, 0.1))
-                .into()
+            text(format!(
+                "Error en el componente {component_name}: ver Diagnostics"
+            ))
+            .color(iced::Color::from_rgb(0.8, 0.1, 0.1))
+            .into()
         }
     }
 }
@@ -1800,34 +1862,61 @@ where
 pub fn update(state: &mut Midway, message: Message) -> Task<Message> {
     match message {
         Message::Tick => Task::none(),
-        Message::RequestComposer(message) => {
-            guarded_update("RequestComposer", state, |state| update_request_composer(state, message))
-        }
+        Message::RequestComposer(message) => guarded_update("RequestComposer", state, |state| {
+            update_request_composer(state, message)
+        }),
         Message::ResponseInspector(message) => {
-            guarded_update("ResponseInspector", state, |state| update_response_inspector(state, message))
-        }
-        Message::Workspace(message) => guarded_update("Workspace", state, |state| update_workspace(state, message)),
-        Message::Runner(message) => guarded_update("Runner", state, |state| update_runner(state, message)),
-        Message::Session(message) => guarded_update("Session", state, |state| update_session(state, message)),
-        Message::Palette(message) => guarded_update("Palette", state, |state| update_palette(state, message)),
-        Message::Theme(message) => guarded_update("Theme", state, |state| update_theme(state, message)),
-        Message::Keyboard(message) => guarded_update("Keyboard", state, |state| update_keyboard(state, message)),
-        Message::Updater(_) => Task::none(),
-        Message::ActivityBar(message) => {
-            guarded_update("ActivityBar", state, |state| update_activity_bar(state, message))
-        }
-        Message::Tree(message) => {
-            guarded_update("Tree", state, |state| {
-                crate::ui::request_tree_pane::update_tree(state, message)
+            guarded_update("ResponseInspector", state, |state| {
+                update_response_inspector(state, message)
             })
         }
-        Message::WorkspaceCrud(message) => {
-            guarded_update("WorkspaceCrud", state, |state| update_workspace_crud(state, message))
+        Message::Workspace(message) => {
+            guarded_update("Workspace", state, |state| update_workspace(state, message))
         }
-        Message::TopBar(message) => guarded_update("TopBar", state, |state| update_top_bar(state, message)),
-        Message::PanelResize(message) => {
-            guarded_update("PanelResize", state, |state| update_panel_resize(state, message))
+        Message::Runner(message) => {
+            guarded_update("Runner", state, |state| update_runner(state, message))
         }
+        Message::Session(message) => {
+            guarded_update("Session", state, |state| update_session(state, message))
+        }
+        Message::Palette(message) => {
+            guarded_update("Palette", state, |state| update_palette(state, message))
+        }
+        // Vertical Tema/Ajustes (Tarea 7.2, Req 8.1, 8.4, 8.6): la App_Raíz
+        // no aplica la transición de estado, solo delega en
+        // `theme_settings::update` y traduce cada Evento_Ascendente en su
+        // efecto local. `ThemeEvent::ThemeChanged` marca la sesión como sucia,
+        // lo que dispara el autosave existente que persiste `theme_mode`
+        // dentro de `SessionSnapshot`. No hay trabajo asíncrono, de ahí
+        // `Task::none()`.
+        Message::Theme(message) => guarded_update("Theme", state, |state| {
+            for event in theme_settings::update(&mut state.theme, message) {
+                match event {
+                    ThemeEvent::ThemeChanged { .. } => state.session.dirty = true,
+                }
+            }
+
+            Task::none()
+        }),
+        Message::Keyboard(message) => {
+            guarded_update("Keyboard", state, |state| update_keyboard(state, message))
+        }
+        Message::Updater(_) => Task::none(),
+        Message::ActivityBar(message) => guarded_update("ActivityBar", state, |state| {
+            update_activity_bar(state, message)
+        }),
+        Message::Tree(message) => guarded_update("Tree", state, |state| {
+            crate::ui::request_tree_pane::update_tree(state, message)
+        }),
+        Message::WorkspaceCrud(message) => guarded_update("WorkspaceCrud", state, |state| {
+            update_workspace_crud(state, message)
+        }),
+        Message::TopBar(message) => {
+            guarded_update("TopBar", state, |state| update_top_bar(state, message))
+        }
+        Message::PanelResize(message) => guarded_update("PanelResize", state, |state| {
+            update_panel_resize(state, message)
+        }),
     }
 }
 
@@ -1840,7 +1929,11 @@ pub fn update(state: &mut Midway, message: Message) -> Task<Message> {
 fn update_runner(state: &mut Midway, message: RunnerMessage) -> Task<Message> {
     match message {
         RunnerMessage::StartRequested(input) => {
-            if state.runner.as_ref().is_some_and(|runner| runner.running.is_some()) {
+            if state
+                .runner
+                .as_ref()
+                .is_some_and(|runner| runner.running.is_some())
+            {
                 return Task::none();
             }
 
@@ -1858,9 +1951,14 @@ fn update_runner(state: &mut Midway, message: RunnerMessage) -> Task<Message> {
 
             Task::perform(
                 async move {
-                    crate::collection_runner::run_collection(app_state, input, progress_tx, cancel_rx)
-                        .await
-                        .map_err(|error| error.to_string())
+                    crate::collection_runner::run_collection(
+                        app_state,
+                        input,
+                        progress_tx,
+                        cancel_rx,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
                 },
                 |result| Message::Runner(RunnerMessage::Finished(result)),
             )
@@ -1939,7 +2037,10 @@ fn update_session(state: &mut Midway, message: SessionMessage) -> Task<Message> 
             let snapshot = build_session_snapshot(state);
 
             Task::perform(
-                async move { crate::session::write_session_snapshot(&snapshot).map_err(|error| error.to_string()) },
+                async move {
+                    crate::session::write_session_snapshot(&snapshot)
+                        .map_err(|error| error.to_string())
+                },
                 |result| Message::Session(SessionMessage::AutosaveWritten(result)),
             )
         }
@@ -1986,7 +2087,11 @@ pub fn build_palette_items(state: &Midway) -> Vec<command_palette::CommandPalett
         id: PALETTE_ACTION_NEW_REQUEST.to_string(),
         title: "Nuevo request".to_string(),
         subtitle: Some("Abrir una pestaña en blanco".to_string()),
-        keywords: vec!["new".to_string(), "request".to_string(), "nuevo".to_string()],
+        keywords: vec![
+            "new".to_string(),
+            "request".to_string(),
+            "nuevo".to_string(),
+        ],
         section: "Acción".to_string(),
     }];
 
@@ -1995,7 +2100,11 @@ pub fn build_palette_items(state: &Midway) -> Vec<command_palette::CommandPalett
             id: format!("{PALETTE_PREFIX_COLLECTION}{}", collection.collection.id),
             title: collection.collection.name.clone(),
             subtitle: Some(format!("{} request(s)", collection.requests.len())),
-            keywords: vec!["collection".to_string(), "colección".to_string(), collection.collection.name.clone()],
+            keywords: vec![
+                "collection".to_string(),
+                "colección".to_string(),
+                collection.collection.name.clone(),
+            ],
             section: "Colección".to_string(),
         });
 
@@ -2114,17 +2223,6 @@ fn update_palette(state: &mut Midway, message: PaletteMessage) -> Task<Message> 
         PaletteMessage::Dismissed => {
             state.palette.is_open = false;
             state.palette.query.clear();
-            Task::none()
-        }
-    }
-}
-
-/// Implementa el cambio de `ThemeMode` (Requisito 5.3 del spec).
-fn update_theme(state: &mut Midway, message: ThemeMessage) -> Task<Message> {
-    match message {
-        ThemeMessage::Toggled => {
-            state.theme_mode = state.theme_mode.toggled();
-            state.session.dirty = true;
             Task::none()
         }
     }
@@ -2266,7 +2364,8 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
     match message {
         WorkspaceCrudMessage::CreateFolderRequested { parent_folder_id } => {
             let Some(collection_id) = state.active_collection_id.clone() else {
-                state.tree.error = Some("Seleccioná una colección antes de crear una carpeta.".to_string());
+                state.tree.error =
+                    Some("Seleccioná una colección antes de crear una carpeta.".to_string());
                 return Task::none();
             };
 
@@ -2276,7 +2375,12 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
                     .collections
                     .iter()
                     .find(|collection| collection.collection.id == collection_id)
-                    .and_then(|collection| collection.folders.iter().find(|folder| folder.id == folder_id))
+                    .and_then(|collection| {
+                        collection
+                            .folders
+                            .iter()
+                            .find(|folder| folder.id == folder_id)
+                    })
                     .map(|folder| folder.name.clone())
             });
             if parent_folder_id.is_some() && parent_name.is_none() {
@@ -2309,10 +2413,7 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
                 state.tree.error = Some("No se pudo encontrar la colección.".to_string());
                 return Task::none();
             };
-            let is_delete = matches!(
-                message,
-                WorkspaceCrudMessage::DeleteCollectionRequested(_)
-            );
+            let is_delete = matches!(message, WorkspaceCrudMessage::DeleteCollectionRequested(_));
             if is_delete
                 && state
                     .runner
@@ -2451,17 +2552,15 @@ fn update_workspace_crud(state: &mut Midway, message: WorkspaceCrudMessage) -> T
                         WorkspaceCrudKind::CreateFolder {
                             collection_id,
                             parent_folder_id,
-                        } => {
-                            app_state
-                                .repository
-                                .create_folder(SaveFolderInput {
-                                    collection_id,
-                                    parent_folder_id,
-                                    name,
-                                })
-                                .await
-                                .map(|_| ())
-                        }
+                        } => app_state
+                            .repository
+                            .create_folder(SaveFolderInput {
+                                collection_id,
+                                parent_folder_id,
+                                name,
+                            })
+                            .await
+                            .map(|_| ()),
                         WorkspaceCrudKind::RenameCollection { collection_id } => app_state
                             .repository
                             .rename_collection(collection_id, name)
@@ -2543,15 +2642,13 @@ fn reconcile_workspace_after_crud(state: &mut Midway, workspace: WorkspaceSnapsh
         .map(|tab| tab.id.clone());
 
     state.tabs.retain(|tab| {
-        !tab
-            .draft
+        !tab.draft
             .id
             .as_ref()
             .is_some_and(|request_id| deleted_request_ids.contains(request_id))
     });
     state.closed_tabs.retain(|tab| {
-        !tab
-            .draft
+        !tab.draft
             .id
             .as_ref()
             .is_some_and(|request_id| deleted_request_ids.contains(request_id))
@@ -2657,6 +2754,21 @@ const DEBUG_REQUEST_PANE_MAX_WIDTH: f32 = 1_200.0;
 /// Ancho fijo del Activity_Bar (no redimensionable).
 const ACTIVITY_BAR_WIDTH: f32 = 48.0;
 
+/// Constantes de redimensionamiento vertical del panel de respuesta en la
+/// disposición apilada del área Debug.
+///
+/// `RESPONSE_PANE_MIN_HEIGHT` y `RESPONSE_PANE_MAX_HEIGHT` son exactamente el
+/// rango del clamp fijo que `debug_split_content` aplicaba en línea, extraído
+/// a constantes: para las sesiones existentes no cambia lo que se ve.
+const RESPONSE_PANE_MIN_HEIGHT: f32 = 180.0;
+const RESPONSE_PANE_MAX_HEIGHT: f32 = 360.0;
+/// Alto de la zona sensible del divisor horizontal, simétrico a los
+/// divisores verticales (`TREE_DIVIDER_HIT_WIDTH`, `DEBUG_DIVIDER_HIT_WIDTH`).
+const RESPONSE_DIVIDER_HIT_HEIGHT: f32 = 10.0;
+/// Alto mínimo que se le reserva al editor de request para que arrastrar el
+/// divisor horizontal no lo colapse.
+const REQUEST_PANE_MIN_HEIGHT: f32 = 160.0;
+
 fn tree_pane_width_from_cursor(cursor_x: f32) -> f32 {
     (cursor_x - ACTIVITY_BAR_WIDTH).clamp(TREE_PANE_MIN_WIDTH, TREE_PANE_MAX_WIDTH)
 }
@@ -2672,13 +2784,88 @@ fn request_panel_width_for_available(stored_width: f32, available_width: f32) ->
     stored_width.clamp(DEBUG_PANE_MIN_WIDTH, max_width)
 }
 
+/// Altura del panel de respuesta a partir de la coordenada Y del cursor y del
+/// borde inferior del área Debug.
+///
+/// Semántica ante valores no finitos, decidida acá de forma explícita (criterio
+/// de cierre de L35 en `docs/known-limitations.md`):
+///
+/// - `+inf` como alto resultante queda en `RESPONSE_PANE_MAX_HEIGHT` y `-inf`
+///   en `RESPONSE_PANE_MIN_HEIGHT`: `f32::clamp` ya ordena los infinitos.
+/// - `NaN` —incluido el que produce `inf - inf` o cualquier argumento `NaN`—
+///   **no se propaga**: degrada a `RESPONSE_PANE_MIN_HEIGHT`, el destino
+///   seguro, porque `f32::clamp` deja pasar `NaN` sin acotarlo.
+/// - No hay pánico posible: los dos límites son constantes finitas con
+///   `min <= max`, la única condición bajo la que `f32::clamp` entra en pánico.
+///
+/// El resultado siempre queda dentro de
+/// `[RESPONSE_PANE_MIN_HEIGHT, RESPONSE_PANE_MAX_HEIGHT]`.
+fn response_panel_height_from_cursor(cursor_y: f32, area_bottom_y: f32) -> f32 {
+    let height = area_bottom_y - cursor_y;
+    if height.is_nan() {
+        RESPONSE_PANE_MIN_HEIGHT
+    } else {
+        height.clamp(RESPONSE_PANE_MIN_HEIGHT, RESPONSE_PANE_MAX_HEIGHT)
+    }
+}
+
+/// Altura efectiva del panel de respuesta dado el alto disponible: nunca deja
+/// al editor de request por debajo de `REQUEST_PANE_MIN_HEIGHT`.
+///
+/// El rango de salida es exactamente el del clamp fijo que `debug_split_content`
+/// aplicaba en línea: `[RESPONSE_PANE_MIN_HEIGHT, RESPONSE_PANE_MAX_HEIGHT]`.
+/// El techo se recorta además al espacio que sobra tras reservar el divisor y
+/// el mínimo del editor, sin bajar nunca del mínimo del panel de respuesta.
+///
+/// Semántica ante valores no finitos, decidida acá de forma explícita:
+///
+/// - `available_height` no finito o tan chico que no deja espacio: el techo se
+///   satura en `RESPONSE_PANE_MIN_HEIGHT`, así que el resultado es el mínimo.
+///   `f32::max` descarta `NaN`, de modo que un alto disponible `NaN` degrada al
+///   mínimo en vez de contaminar los límites de `clamp`.
+/// - `stored_height` igual a `NaN`: degrada a `RESPONSE_PANE_MIN_HEIGHT` en vez
+///   de propagarse, igual que en `response_panel_height_from_cursor`.
+/// - No hay pánico posible: el techo se construye con `max` y `min` sobre
+///   constantes finitas, así que queda en `[RESPONSE_PANE_MIN_HEIGHT,
+///   RESPONSE_PANE_MAX_HEIGHT]` y nunca es `NaN` ni menor que el piso.
+// `clippy::manual_clamp` sugiere reemplazar `max(...).min(...)` por
+// `clamp(...)` en el cálculo de `max_height`. NO se aplica a propósito: la
+// semántica ante `NaN` es distinta. `f32::max` descarta `NaN` (devuelve el
+// otro operando), mientras que `f32::clamp` lo propaga. El orden
+// `max`-luego-`min` es justamente lo que sanea un `available_height` igual a
+// `NaN` degradándolo al mínimo, en vez de contaminar el techo y con él el
+// resultado. Ese comportamiento está fijado por
+// `property_5_resize_bounds_clamp_and_are_idempotent` (Propiedad 5) en el
+// módulo `panel_resize_tests` y es el criterio de cierre de la limitación
+// `L35` en `docs/known-limitations.md`. Aplicar la sugerencia reintroduciría
+// la propagación de `NaN` y rompería la Propiedad 5.
+#[allow(clippy::manual_clamp)]
+fn response_panel_height_for_available(stored_height: f32, available_height: f32) -> f32 {
+    let room_for_response =
+        available_height - RESPONSE_DIVIDER_HIT_HEIGHT - REQUEST_PANE_MIN_HEIGHT;
+    // `max` primero: descarta `NaN` y garantiza `min <= max` para el `clamp`
+    // final. `min` después: preserva el techo de 360 del baseline.
+    let max_height = room_for_response
+        .max(RESPONSE_PANE_MIN_HEIGHT)
+        .min(RESPONSE_PANE_MAX_HEIGHT);
+    if stored_height.is_nan() {
+        RESPONSE_PANE_MIN_HEIGHT
+    } else {
+        stored_height.clamp(RESPONSE_PANE_MIN_HEIGHT, max_height)
+    }
+}
+
 #[cfg(test)]
 mod panel_resize_tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn tree_pane_width_tracks_cursor_after_activity_bar() {
-        assert_eq!(tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + 320.0), 320.0);
+        assert_eq!(
+            tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + 320.0),
+            320.0
+        );
     }
 
     #[test]
@@ -2699,7 +2886,10 @@ mod panel_resize_tests {
 
         let _ = update_panel_resize(
             &mut state,
-            PanelResizeMessage::DividerDragged(ACTIVITY_BAR_WIDTH + 360.0),
+            PanelResizeMessage::DividerDragged {
+                x: ACTIVITY_BAR_WIDTH + 360.0,
+                y: 0.0,
+            },
         );
         assert_eq!(state.session.panel_sizes.workspace_panel_width, 360.0);
         assert!(state.session.dirty);
@@ -2719,14 +2909,204 @@ mod panel_resize_tests {
         );
         let _ = update_panel_resize(
             &mut state,
-            PanelResizeMessage::DividerDragged(
-                ACTIVITY_BAR_WIDTH + 300.0 + TREE_DIVIDER_HIT_WIDTH + 420.0,
-            ),
+            PanelResizeMessage::DividerDragged {
+                x: ACTIVITY_BAR_WIDTH + 300.0 + TREE_DIVIDER_HIT_WIDTH + 420.0,
+                y: 0.0,
+            },
         );
 
         assert_eq!(state.panel_dragging, Some(PanelDragState::RequestResponse));
         assert_eq!(state.session.panel_sizes.request_panel_width, 420.0);
         assert!(state.session.dirty);
+    }
+
+    #[test]
+    fn response_height_resize_tracks_cursor_and_persists_on_release() {
+        let mut state = super::tests::build_test_midway(create_blank_draft());
+        let initial_tree_width = state.session.panel_sizes.workspace_panel_width;
+        let initial_request_width = state.session.panel_sizes.request_panel_width;
+
+        // El divisor vive en `area_bottom_y = 700`; el cursor a 460 deja
+        // 240 px de alto para el panel de respuesta, dentro del rango.
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::ResponseHeightDividerDragStarted {
+                area_bottom_y: 700.0,
+            },
+        );
+        assert_eq!(
+            state.panel_dragging,
+            Some(PanelDragState::ResponseHeight {
+                area_bottom_y: 700.0
+            })
+        );
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerDragged { x: 999.0, y: 460.0 },
+        );
+
+        assert_eq!(state.session.panel_sizes.response_panel_height, 240.0);
+        assert!(state.session.dirty);
+        // El eje X no toca los divisores verticales durante un arrastre
+        // horizontal (Req 9.7).
+        assert_eq!(
+            state.session.panel_sizes.workspace_panel_width,
+            initial_tree_width
+        );
+        assert_eq!(
+            state.session.panel_sizes.request_panel_width,
+            initial_request_width
+        );
+
+        let _ = update_panel_resize(&mut state, PanelResizeMessage::DividerDragEnded);
+        assert!(state.panel_dragging.is_none());
+        // Al soltar, la altura escrita durante el arrastre es la que queda en
+        // el snapshot que persiste el autosave existente (Req 9.3).
+        assert_eq!(state.session.panel_sizes.response_panel_height, 240.0);
+        assert!(state.session.dirty);
+    }
+
+    #[test]
+    fn response_height_drag_is_ignored_without_active_drag() {
+        let mut state = super::tests::build_test_midway(create_blank_draft());
+        let initial_height = state.session.panel_sizes.response_panel_height;
+
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerDragged { x: 0.0, y: 460.0 },
+        );
+
+        assert_eq!(
+            state.session.panel_sizes.response_panel_height,
+            initial_height
+        );
+        assert!(!state.session.dirty);
+    }
+
+    #[test]
+    fn response_height_drag_state_compares_by_divider_not_by_geometry() {
+        // `panel_dragging`/`panel_hovered` se comparan en la vista para decidir
+        // el estado visual del divisor: un cambio de tamaño de ventana (otro
+        // `area_bottom_y`) no debe leerse como "otro divisor".
+        assert_eq!(
+            PanelDragState::ResponseHeight {
+                area_bottom_y: 700.0
+            },
+            PanelDragState::ResponseHeight {
+                area_bottom_y: 320.0
+            }
+        );
+        assert_ne!(
+            PanelDragState::ResponseHeight {
+                area_bottom_y: 700.0
+            },
+            PanelDragState::RequestResponse
+        );
+    }
+
+    #[test]
+    fn response_height_divider_propagates_the_area_geometry_to_the_reducer() {
+        // Tarea 10.3: el divisor apilado construye su mensaje de inicio de
+        // arrastre con `divider_drag_started_message`, que es lo que lleva el
+        // `area_bottom_y` calculado por la vista hasta el reducer. Sin esa
+        // propagación el reducer no podría convertir la Y del cursor en alto de
+        // panel (Req 9.2).
+        let started = divider_drag_started_message(PanelDragState::ResponseHeight {
+            area_bottom_y: 640.0,
+        });
+        assert!(matches!(
+            started,
+            PanelResizeMessage::ResponseHeightDividerDragStarted { area_bottom_y }
+                if area_bottom_y == 640.0
+        ));
+
+        // Los dos divisores verticales siguen produciendo exactamente sus
+        // mensajes del baseline (Req 9.7).
+        assert!(matches!(
+            divider_drag_started_message(PanelDragState::TreeMain),
+            PanelResizeMessage::TreeDividerDragStarted
+        ));
+        assert!(matches!(
+            divider_drag_started_message(PanelDragState::RequestResponse),
+            PanelResizeMessage::RequestResponseDividerDragStarted
+        ));
+    }
+
+    #[test]
+    fn both_dividers_share_the_same_three_visual_states() {
+        // El divisor horizontal debe leerse como parte del mismo sistema que
+        // los verticales: no redefine colores ni grosores, usa los mismos
+        // `divider_line_color` / `divider_line_thickness` que ya usaba
+        // `vertical_resize_divider`.
+        let ds = DesignSystem::for_mode(crate::ui::design_system::ThemeMode::Dark);
+        let accent = ds.palette.accent;
+
+        // Reposo: acento con α 0.18 y línea de 2 px.
+        let rest = divider_line_color(&ds, false, false);
+        assert_eq!(rest.a, 0.18);
+        assert_eq!((rest.r, rest.g, rest.b), (accent.r, accent.g, accent.b));
+        assert_eq!(divider_line_thickness(false), 2.0);
+
+        // Hover: mismo acento con α 0.75, sigue en 2 px.
+        let hovered = divider_line_color(&ds, false, true);
+        assert_eq!(hovered.a, 0.75);
+        assert_eq!(
+            (hovered.r, hovered.g, hovered.b),
+            (accent.r, accent.g, accent.b)
+        );
+
+        // Activo: acento sólido y línea de 3 px. `active` gana sobre `hovered`,
+        // que es el estado real durante un arrastre.
+        assert_eq!(divider_line_color(&ds, true, false), accent);
+        assert_eq!(divider_line_color(&ds, true, true), accent);
+        assert_eq!(divider_line_thickness(true), 3.0);
+    }
+
+    #[test]
+    fn stacked_divider_drag_resolves_to_the_height_the_layout_renders() {
+        // Recorrido completo del cableado de la Tarea 10.3, sin ventana: la
+        // vista calcula `area_bottom_y` a partir del alto de ventana, el
+        // divisor emite el mensaje de inicio, el listener global aporta la Y
+        // del cursor y el alto resultante es el que el layout apilado le da al
+        // inspector para ese mismo alto disponible.
+        let mut state = super::tests::build_test_midway(create_blank_draft());
+        let window_height = 720.0;
+        // Alto del área Debug: la ventana menos el cromo de arriba (top bar y
+        // toolbar). El valor exacto no importa, sí que sea menor que la ventana.
+        let available_height = 600.0;
+
+        let _ = update_panel_resize(
+            &mut state,
+            divider_drag_started_message(PanelDragState::ResponseHeight {
+                area_bottom_y: window_height,
+            }),
+        );
+        let _ = update_panel_resize(
+            &mut state,
+            PanelResizeMessage::DividerDragged {
+                x: 0.0,
+                y: window_height - 250.0,
+            },
+        );
+        let _ = update_panel_resize(&mut state, PanelResizeMessage::DividerDragEnded);
+
+        assert_eq!(state.session.panel_sizes.response_panel_height, 250.0);
+        // Con 600 px de área hay lugar de sobra (250 + 10 + 160 < 600), así que
+        // el layout apilado renderiza exactamente la altura arrastrada.
+        assert_eq!(
+            response_panel_height_for_available(
+                state.session.panel_sizes.response_panel_height,
+                available_height
+            ),
+            250.0
+        );
+        // La altura queda en la sesión marcada como sucia: la persiste el
+        // autosave existente como `panelSizes.responsePanelHeight` (Req 9.3) y
+        // `restore_pending_session` la devuelve al reiniciar (Req 9.4). No hay
+        // ningún camino de escritura paralelo.
+        assert!(state.session.dirty);
+        assert!(state.panel_dragging.is_none());
     }
 
     #[test]
@@ -2743,14 +3123,13 @@ mod panel_resize_tests {
 
     #[test]
     fn global_mouse_events_map_to_drag_messages() {
-        let moved = panel_resize_message_for_event(&iced::Event::Mouse(
-            iced::mouse::Event::CursorMoved {
+        let moved =
+            panel_resize_message_for_event(&iced::Event::Mouse(iced::mouse::Event::CursorMoved {
                 position: iced::Point::new(444.0, 120.0),
-            },
-        ));
+            }));
         assert!(matches!(
             moved,
-            Some(PanelResizeMessage::DividerDragged(x)) if x == 444.0
+            Some(PanelResizeMessage::DividerDragged { x, y }) if x == 444.0 && y == 120.0
         ));
 
         let released = panel_resize_message_for_event(&iced::Event::Mouse(
@@ -2761,9 +3140,8 @@ mod panel_resize_tests {
             Some(PanelResizeMessage::DividerDragEnded)
         ));
 
-        let left_window = panel_resize_message_for_event(&iced::Event::Mouse(
-            iced::mouse::Event::CursorLeft,
-        ));
+        let left_window =
+            panel_resize_message_for_event(&iced::Event::Mouse(iced::mouse::Event::CursorLeft));
         assert!(matches!(
             left_window,
             Some(PanelResizeMessage::DividerDragEnded)
@@ -2777,10 +3155,16 @@ mod panel_resize_tests {
 
         let _ = update_panel_resize(
             &mut state,
-            PanelResizeMessage::DividerDragged(ACTIVITY_BAR_WIDTH + 400.0),
+            PanelResizeMessage::DividerDragged {
+                x: ACTIVITY_BAR_WIDTH + 400.0,
+                y: 0.0,
+            },
         );
 
-        assert_eq!(state.session.panel_sizes.workspace_panel_width, initial_width);
+        assert_eq!(
+            state.session.panel_sizes.workspace_panel_width,
+            initial_width
+        );
         assert!(!state.session.dirty);
     }
 
@@ -2806,6 +3190,842 @@ mod panel_resize_tests {
         );
         assert!(state.panel_hovered.is_none());
     }
+
+    // --- Caracterización de los límites de redimensionamiento vigentes (Req 6.1, 6.5) ---
+    //
+    // Los tests que siguen fijan el comportamiento OBSERVADO del baseline sin
+    // modificar `tree_pane_width_from_cursor`, `request_panel_width_from_cursor`
+    // ni `request_panel_width_for_available`. Afirman lo que el código hace hoy,
+    // no lo que debería hacer. El test de propiedad de estas funciones llega en
+    // la tarea 10.4 (Property 5).
+
+    #[test]
+    fn tree_pane_width_clamps_exactly_at_range_boundaries() {
+        // Justo en los bordes el resultado es el borde mismo.
+        assert_eq!(
+            tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + TREE_PANE_MIN_WIDTH),
+            TREE_PANE_MIN_WIDTH
+        );
+        assert_eq!(
+            tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + TREE_PANE_MAX_WIDTH),
+            TREE_PANE_MAX_WIDTH
+        );
+        // Un paso fuera de cada borde queda clampeado al borde.
+        assert_eq!(
+            tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + TREE_PANE_MIN_WIDTH - 0.5),
+            TREE_PANE_MIN_WIDTH
+        );
+        assert_eq!(
+            tree_pane_width_from_cursor(ACTIVITY_BAR_WIDTH + TREE_PANE_MAX_WIDTH + 0.5),
+            TREE_PANE_MAX_WIDTH
+        );
+    }
+
+    #[test]
+    fn tree_pane_width_handles_degenerate_cursor_coordinates() {
+        // Cursor negativo o a la izquierda del Activity_Bar: mínimo.
+        assert_eq!(tree_pane_width_from_cursor(-1_000.0), TREE_PANE_MIN_WIDTH);
+        assert_eq!(
+            tree_pane_width_from_cursor(f32::NEG_INFINITY),
+            TREE_PANE_MIN_WIDTH
+        );
+        // Infinito positivo: máximo.
+        assert_eq!(
+            tree_pane_width_from_cursor(f32::INFINITY),
+            TREE_PANE_MAX_WIDTH
+        );
+        // Comportamiento observado con NaN: `f32::clamp` no clampea NaN, lo
+        // propaga. El baseline no entra en pánico, pero tampoco acota.
+        assert!(tree_pane_width_from_cursor(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn request_panel_width_from_cursor_passes_through_inside_range() {
+        let tree_pane_width = 300.0;
+        let origin = ACTIVITY_BAR_WIDTH + tree_pane_width + TREE_DIVIDER_HIT_WIDTH;
+
+        assert_eq!(
+            request_panel_width_from_cursor(origin + 640.0, tree_pane_width),
+            640.0
+        );
+        assert_eq!(
+            request_panel_width_from_cursor(origin + DEBUG_PANE_MIN_WIDTH, tree_pane_width),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        assert_eq!(
+            request_panel_width_from_cursor(origin + DEBUG_REQUEST_PANE_MAX_WIDTH, tree_pane_width),
+            DEBUG_REQUEST_PANE_MAX_WIDTH
+        );
+    }
+
+    #[test]
+    fn request_panel_width_from_cursor_clamps_outside_range() {
+        let tree_pane_width = 300.0;
+        let origin = ACTIVITY_BAR_WIDTH + tree_pane_width + TREE_DIVIDER_HIT_WIDTH;
+
+        assert_eq!(
+            request_panel_width_from_cursor(origin + DEBUG_PANE_MIN_WIDTH - 1.0, tree_pane_width),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        assert_eq!(
+            request_panel_width_from_cursor(
+                origin + DEBUG_REQUEST_PANE_MAX_WIDTH + 1.0,
+                tree_pane_width
+            ),
+            DEBUG_REQUEST_PANE_MAX_WIDTH
+        );
+        // Cursor en el origen de la ventana o negativo: mínimo.
+        assert_eq!(
+            request_panel_width_from_cursor(0.0, tree_pane_width),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        assert_eq!(
+            request_panel_width_from_cursor(-5_000.0, tree_pane_width),
+            DEBUG_PANE_MIN_WIDTH
+        );
+    }
+
+    #[test]
+    fn request_panel_width_from_cursor_handles_degenerate_inputs() {
+        let tree_pane_width = 300.0;
+
+        assert_eq!(
+            request_panel_width_from_cursor(f32::INFINITY, tree_pane_width),
+            DEBUG_REQUEST_PANE_MAX_WIDTH
+        );
+        assert_eq!(
+            request_panel_width_from_cursor(f32::NEG_INFINITY, tree_pane_width),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        // NaN en cualquiera de los dos argumentos se propaga sin clampear.
+        assert!(request_panel_width_from_cursor(f32::NAN, tree_pane_width).is_nan());
+        assert!(request_panel_width_from_cursor(600.0, f32::NAN).is_nan());
+
+        // Comportamiento observado con un ancho de explorador negativo: no se
+        // saneiza, se resta, de modo que infla el ancho resultante.
+        assert_eq!(
+            request_panel_width_from_cursor(400.0, -200.0),
+            400.0 - ACTIVITY_BAR_WIDTH + 200.0 - TREE_DIVIDER_HIT_WIDTH
+        );
+    }
+
+    #[test]
+    fn request_panel_width_from_cursor_ignores_available_width() {
+        // El arrastre solo conoce el rango fijo [220, 1200]: puede fijar un
+        // ancho almacenado mayor al que el layout luego permitirá. La
+        // reconciliación queda a cargo de `request_panel_width_for_available`.
+        let stored = request_panel_width_from_cursor(5_000.0, 150.0);
+        assert_eq!(stored, DEBUG_REQUEST_PANE_MAX_WIDTH);
+        assert_eq!(
+            request_panel_width_for_available(stored, 700.0),
+            700.0 - DEBUG_DIVIDER_HIT_WIDTH - DEBUG_PANE_MIN_WIDTH
+        );
+    }
+
+    #[test]
+    fn request_panel_width_for_available_passes_through_inside_range() {
+        // available = 1000 → máximo efectivo = 1000 - 10 - 220 = 770.
+        assert_eq!(request_panel_width_for_available(500.0, 1_000.0), 500.0);
+        assert_eq!(request_panel_width_for_available(770.0, 1_000.0), 770.0);
+        assert_eq!(request_panel_width_for_available(771.0, 1_000.0), 770.0);
+        assert_eq!(
+            request_panel_width_for_available(219.9, 1_000.0),
+            DEBUG_PANE_MIN_WIDTH
+        );
+    }
+
+    #[test]
+    fn request_panel_width_for_available_collapses_to_minimum_when_space_is_tight() {
+        // Comportamiento observado: por debajo de 450 px de ancho disponible el
+        // máximo efectivo se satura en DEBUG_PANE_MIN_WIDTH, así que el editor
+        // se queda con 220 px y el panel restante recibe menos que ese mínimo.
+        assert_eq!(
+            request_panel_width_for_available(400.0, 449.0),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        assert_eq!(
+            request_panel_width_for_available(400.0, 0.0),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        assert_eq!(
+            request_panel_width_for_available(400.0, -800.0),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        // El primer ancho disponible que deja crecer al editor es 451.
+        assert_eq!(
+            request_panel_width_for_available(400.0, 450.0),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        assert_eq!(request_panel_width_for_available(400.0, 451.0), 221.0);
+    }
+
+    #[test]
+    fn request_panel_width_for_available_handles_non_finite_inputs() {
+        // `f32::max` descarta NaN, así que un ancho disponible NaN degrada al
+        // mínimo en lugar de entrar en pánico dentro de `clamp`.
+        assert_eq!(
+            request_panel_width_for_available(400.0, f32::NAN),
+            DEBUG_PANE_MIN_WIDTH
+        );
+        // Un ancho almacenado NaN, en cambio, se propaga.
+        assert!(request_panel_width_for_available(f32::NAN, 1_000.0).is_nan());
+        // Sin límite superior real, el ancho almacenado pasa tal cual.
+        assert_eq!(
+            request_panel_width_for_available(500.0, f32::INFINITY),
+            500.0
+        );
+        assert_eq!(
+            request_panel_width_for_available(500.0, f32::NEG_INFINITY),
+            DEBUG_PANE_MIN_WIDTH
+        );
+    }
+
+    // Feature: midway-baseline-audit-and-first-vertical, Tarea 10.1
+    // Requisitos 9.2, 9.7.
+    //
+    // Tests de ejemplo de las funciones nuevas de altura. Fijan la semántica
+    // elegida —clampeada y sin pánico ante valores no finitos, con `NaN`
+    // degradando al mínimo— que es el criterio de cierre de L35 en
+    // `docs/known-limitations.md`. El test de propiedad de las cinco funciones
+    // (Property 5) llega en la tarea 10.4.
+
+    #[test]
+    fn response_panel_height_tracks_cursor_from_bottom_edge() {
+        // La altura es la distancia del cursor al borde inferior del área.
+        assert_eq!(response_panel_height_from_cursor(400.0, 700.0), 300.0);
+        // Los bordes del rango se devuelven tal cual.
+        assert_eq!(
+            response_panel_height_from_cursor(700.0 - RESPONSE_PANE_MIN_HEIGHT, 700.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_from_cursor(700.0 - RESPONSE_PANE_MAX_HEIGHT, 700.0),
+            RESPONSE_PANE_MAX_HEIGHT
+        );
+    }
+
+    #[test]
+    fn response_panel_height_from_cursor_is_clamped_to_supported_range() {
+        // Cursor por debajo del borde inferior: altura negativa → mínimo.
+        assert_eq!(
+            response_panel_height_from_cursor(900.0, 700.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        // Cursor muy arriba: altura enorme → máximo.
+        assert_eq!(
+            response_panel_height_from_cursor(-5_000.0, 700.0),
+            RESPONSE_PANE_MAX_HEIGHT
+        );
+    }
+
+    #[test]
+    fn response_panel_height_from_cursor_handles_non_finite_inputs() {
+        // Infinitos: `clamp` los ordena en los bordes, sin pánico.
+        assert_eq!(
+            response_panel_height_from_cursor(f32::NEG_INFINITY, 700.0),
+            RESPONSE_PANE_MAX_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_from_cursor(f32::INFINITY, 700.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_from_cursor(400.0, f32::INFINITY),
+            RESPONSE_PANE_MAX_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_from_cursor(400.0, f32::NEG_INFINITY),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        // A diferencia de las funciones de ancho (L35), `NaN` no se propaga:
+        // degrada al mínimo. Incluye el `NaN` que produce `inf - inf`.
+        assert_eq!(
+            response_panel_height_from_cursor(f32::NAN, 700.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_from_cursor(400.0, f32::NAN),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_from_cursor(f32::INFINITY, f32::INFINITY),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+    }
+
+    #[test]
+    fn response_panel_height_for_available_preserves_the_baseline_range() {
+        // Con alto disponible amplio el resultado es exactamente el del
+        // `.clamp(180.0, 360.0)` que había en línea en `debug_split_content`.
+        for available in [530.0f32, 700.0, 1_200.0, 10_000.0] {
+            for stored in [0.0f32, 179.9, 180.0, 320.0, 360.0, 360.1, 5_000.0] {
+                assert_eq!(
+                    response_panel_height_for_available(stored, available),
+                    stored.clamp(RESPONSE_PANE_MIN_HEIGHT, RESPONSE_PANE_MAX_HEIGHT),
+                    "stored={stored}, available={available}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn response_panel_height_for_available_reserves_the_request_editor_minimum() {
+        // 530 = 360 + 10 + 160 es el primer alto disponible que permite el
+        // techo completo. Por debajo, el techo cede para no colapsar el editor.
+        assert_eq!(
+            response_panel_height_for_available(360.0, 530.0),
+            RESPONSE_PANE_MAX_HEIGHT
+        );
+        assert_eq!(response_panel_height_for_available(360.0, 500.0), 330.0);
+        // Cuando ya no queda espacio, el techo se satura en el mínimo del
+        // panel de respuesta: el resultado nunca baja de 180.
+        assert_eq!(
+            response_panel_height_for_available(360.0, 300.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_for_available(360.0, 0.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_for_available(360.0, -800.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+    }
+
+    #[test]
+    fn response_panel_height_for_available_handles_non_finite_inputs() {
+        // Alto disponible no finito: sin pánico y dentro del rango.
+        assert_eq!(
+            response_panel_height_for_available(320.0, f32::INFINITY),
+            320.0
+        );
+        assert_eq!(
+            response_panel_height_for_available(320.0, f32::NEG_INFINITY),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        // `f32::max` descarta el `NaN` del techo, así que el clamp queda con
+        // límites finitos y el valor almacenado se acota al mínimo.
+        assert_eq!(
+            response_panel_height_for_available(320.0, f32::NAN),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        // Altura almacenada `NaN`: degrada al mínimo en vez de propagarse.
+        assert_eq!(
+            response_panel_height_for_available(f32::NAN, 1_000.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_for_available(f32::INFINITY, 1_000.0),
+            RESPONSE_PANE_MAX_HEIGHT
+        );
+        assert_eq!(
+            response_panel_height_for_available(f32::NEG_INFINITY, 1_000.0),
+            RESPONSE_PANE_MIN_HEIGHT
+        );
+    }
+
+    // --- Property 5 (Tarea 10.4, Requisitos 6.5 y 9.7) ---
+    //
+    // Espacio de entrada y su recorte declarado.
+    //
+    // El enunciado de la Property 5 habla de "toda coordenada de cursor y todo
+    // ancho o alto disponible". El espacio de entrada real de las cinco
+    // funciones NO es uniforme, y esta sección lo declara antes de generar
+    // nada, porque la asimetría está documentada como comportamiento fijado del
+    // baseline en `docs/known-limitations.md`:
+    //
+    // - `L35`: las tres funciones de ancho vigentes **no acotan `NaN`, lo
+    //   propagan** (`f32::clamp` deja pasar `NaN`). El criterio de cierre de
+    //   `L35` dice literalmente que si la Property 5 obligara a sanear `NaN` en
+    //   esas tres funciones, ese cambio se decide con el usuario y no entra en
+    //   esta tarea. Así que acá **no** se toca producción: se excluye `NaN` del
+    //   generador de las tres funciones de ancho y la exclusión queda escrita.
+    //   Para `request_panel_width_from_cursor` la exclusión alcanza también a
+    //   `±inf` en el ancho de explorador almacenado, porque `inf - inf` produce
+    //   `NaN` y eso es la misma propagación de `L35` por otra vía.
+    // - `L36` y `L37`: por debajo de 451 px el panel derecho recibe menos que
+    //   su mínimo, y un ancho de explorador negativo infla el ancho de request.
+    //   Ninguna de las dos cosas rompe el recorte de la función que se mide
+    //   acá, así que los negativos y los anchos disponibles chicos **sí** entran
+    //   al generador: son parte del espacio válido, no una excepción.
+    // - Las dos funciones nuevas de altura de la tarea 10.1 sí sanean `NaN` al
+    //   mínimo, así que para ellas el generador incluye `NaN` sin excepción
+    //   alguna. Eso es lo que cierra la mitad "funciones nuevas" del criterio
+    //   de `L35`.
+    //
+    // La exclusión no vuelve la propiedad vacía: sobre las funciones de ancho se
+    // siguen generando cero, negativos, los bordes exactos de cada constante,
+    // los extremos finitos del tipo y `±inf`, y se afirma recorte, no
+    // propagación, idempotencia y determinismo.
+
+    /// Extensión de layout arbitraria **sin `NaN`**: coordenadas de cursor y
+    /// anchos que se le pasan a las tres funciones de ancho vigentes.
+    ///
+    /// Cubre a propósito las clases que un rango uniforme casi nunca alcanzaría:
+    /// cero y `-0.0`, negativos, los bordes exactos de cada constante de rango,
+    /// los extremos finitos del tipo y los dos infinitos.
+    fn arb_layout_extent_without_nan() -> impl Strategy<Value = f32> {
+        prop_oneof![
+            // Coordenadas plausibles de ventana, incluyendo negativas.
+            6 => -3_000.0f32..8_000.0f32,
+            // Ceros y bordes exactos de los rangos declarados, donde vive el
+            // límite real de cada clamp.
+            4 => prop_oneof![
+                Just(0.0f32),
+                Just(-0.0f32),
+                Just(ACTIVITY_BAR_WIDTH),
+                Just(TREE_PANE_MIN_WIDTH),
+                Just(TREE_PANE_MAX_WIDTH),
+                Just(ACTIVITY_BAR_WIDTH + TREE_PANE_MIN_WIDTH),
+                Just(ACTIVITY_BAR_WIDTH + TREE_PANE_MAX_WIDTH),
+                Just(DEBUG_PANE_MIN_WIDTH),
+                Just(DEBUG_REQUEST_PANE_MAX_WIDTH),
+                Just(RESPONSE_PANE_MIN_HEIGHT),
+                Just(RESPONSE_PANE_MAX_HEIGHT),
+                // 450 y 451: el borde de `L36`.
+                Just(450.0f32),
+                Just(451.0f32),
+                // 530 = 360 + 10 + 160: primer alto que permite el techo completo.
+                Just(530.0f32),
+            ],
+            // Extremos finitos del tipo.
+            1 => prop_oneof![
+                Just(f32::MIN),
+                Just(f32::MAX),
+                Just(f32::MIN_POSITIVE),
+                Just(-f32::MIN_POSITIVE),
+            ],
+            // No finitos representables como orden: `clamp` sí los acota.
+            2 => prop_oneof![
+                Just(f32::INFINITY),
+                Just(f32::NEG_INFINITY),
+            ],
+        ]
+    }
+
+    /// Igual que [`arb_layout_extent_without_nan`] pero **con `NaN`**: es el
+    /// espacio de entrada de las dos funciones de altura de la tarea 10.1, que
+    /// sanean `NaN` al mínimo en vez de propagarlo.
+    fn arb_layout_extent_with_nan() -> impl Strategy<Value = f32> {
+        prop_oneof![
+            8 => arb_layout_extent_without_nan(),
+            2 => prop_oneof![Just(f32::NAN), Just(-f32::NAN)],
+        ]
+    }
+
+    /// Ancho de explorador **finito** almacenado en la sesión, usado como
+    /// desplazamiento por `request_panel_width_from_cursor`.
+    ///
+    /// Finito por la razón de `L35` explicada arriba: `inf - inf` es `NaN` y
+    /// esta tarea no cambia producción para sanearlo. Incluye negativos y cero
+    /// a propósito: son el espacio de `L37`, que la propiedad sí cubre.
+    fn arb_finite_stored_pane_width() -> impl Strategy<Value = f32> {
+        prop_oneof![
+            6 => -1_000.0f32..2_000.0f32,
+            4 => prop_oneof![
+                Just(0.0f32),
+                Just(-0.0f32),
+                Just(-200.0f32),
+                Just(TREE_PANE_MIN_WIDTH),
+                Just(TREE_PANE_MAX_WIDTH),
+            ],
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        // Feature: midway-baseline-audit-and-first-vertical, Property 5: Los límites de redimensionamiento acotan e idempotizan
+        /// Para toda coordenada de cursor y todo ancho o alto disponible del
+        /// espacio declarado arriba, las cinco funciones de redimensionamiento
+        /// devuelven un valor dentro de su rango declarado, son idempotentes al
+        /// reaplicarse sobre su propio resultado y terminan sin pánico.
+        ///
+        /// Cómo se lee cada una de las tres partes:
+        ///
+        /// - **Acotan.** Se afirma el rango declarado de cada función y, en las
+        ///   dos que reconcilian un valor almacenado contra el espacio
+        ///   disponible, que el recorte nunca *agranda* el valor almacenado por
+        ///   encima del piso.
+        /// - **Idempotizan.** `*_for_available` toma `(almacenado, disponible)`,
+        ///   así que reaplicarla sobre su propio resultado con el mismo
+        ///   disponible es un punto fijo exacto, y eso es lo que se afirma. Las
+        ///   `*_from_cursor` mapean una coordenada a una extensión: son dos
+        ///   espacios distintos y `f(f(x))` no es una reaplicación (de hecho es
+        ///   falsa para un clamp trasladado: `tree_pane_width_from_cursor(500)`
+        ///   da 452). Para ellas la reaplicación que corresponde es la del
+        ///   propio recorte sobre el resultado, más el punto fijo de la
+        ///   composición real del producto: arrastre seguido de reconciliación
+        ///   de layout, que es la secuencia que ocurre en cada frame.
+        /// - **Sin pánico.** `f32::clamp` entra en pánico si `min > max`. Que la
+        ///   ejecución llegue a las afirmaciones ya es la evidencia de que
+        ///   ninguna de las cinco lo hace para esta entrada.
+        #[test]
+        fn property_5_resize_bounds_clamp_and_are_idempotent(
+            cursor_x in arb_layout_extent_without_nan(),
+            tree_pane_width in arb_finite_stored_pane_width(),
+            stored_request_width in arb_layout_extent_without_nan(),
+            cursor_y in arb_layout_extent_with_nan(),
+            area_bottom_y in arb_layout_extent_with_nan(),
+            stored_response_height in arb_layout_extent_with_nan(),
+            available_extent in arb_layout_extent_with_nan(),
+        ) {
+            // --- 1. `tree_pane_width_from_cursor` ---
+            let tree_width = tree_pane_width_from_cursor(cursor_x);
+            prop_assert!(
+                !tree_width.is_nan(),
+                "tree_pane_width_from_cursor({cursor_x}) devolvió NaN: sin NaN en la \
+                 entrada el resultado tiene que quedar acotado (L35)"
+            );
+            prop_assert!(
+                (TREE_PANE_MIN_WIDTH..=TREE_PANE_MAX_WIDTH).contains(&tree_width),
+                "tree_pane_width_from_cursor({}) = {} quedó fuera de [{}, {}]",
+                cursor_x,
+                tree_width,
+                TREE_PANE_MIN_WIDTH,
+                TREE_PANE_MAX_WIDTH
+            );
+            prop_assert_eq!(
+                tree_width.clamp(TREE_PANE_MIN_WIDTH, TREE_PANE_MAX_WIDTH),
+                tree_width,
+                "reaplicar el recorte del explorador sobre su propio resultado debe ser \
+                 un punto fijo"
+            );
+            prop_assert_eq!(
+                tree_pane_width_from_cursor(cursor_x),
+                tree_width,
+                "tree_pane_width_from_cursor debe ser determinista"
+            );
+
+            // --- 2. `request_panel_width_from_cursor` ---
+            let request_width = request_panel_width_from_cursor(cursor_x, tree_pane_width);
+            prop_assert!(
+                !request_width.is_nan(),
+                "request_panel_width_from_cursor({cursor_x}, {tree_pane_width}) devolvió \
+                 NaN con entrada sin NaN ni infinitos en el ancho almacenado (L35)"
+            );
+            prop_assert!(
+                (DEBUG_PANE_MIN_WIDTH..=DEBUG_REQUEST_PANE_MAX_WIDTH).contains(&request_width),
+                "request_panel_width_from_cursor({}, {}) = {} quedó fuera de [{}, {}]",
+                cursor_x,
+                tree_pane_width,
+                request_width,
+                DEBUG_PANE_MIN_WIDTH,
+                DEBUG_REQUEST_PANE_MAX_WIDTH
+            );
+            prop_assert_eq!(
+                request_width.clamp(DEBUG_PANE_MIN_WIDTH, DEBUG_REQUEST_PANE_MAX_WIDTH),
+                request_width,
+                "reaplicar el recorte del editor de request sobre su propio resultado \
+                 debe ser un punto fijo"
+            );
+            prop_assert_eq!(
+                request_panel_width_from_cursor(cursor_x, tree_pane_width),
+                request_width,
+                "request_panel_width_from_cursor debe ser determinista"
+            );
+
+            // --- 3. `request_panel_width_for_available` ---
+            let fitted_width =
+                request_panel_width_for_available(stored_request_width, available_extent);
+            prop_assert!(
+                !fitted_width.is_nan(),
+                "request_panel_width_for_available({stored_request_width}, \
+                 {available_extent}) devolvió NaN con un ancho almacenado sin NaN (L35)"
+            );
+            prop_assert!(
+                fitted_width >= DEBUG_PANE_MIN_WIDTH,
+                "request_panel_width_for_available({}, {}) = {} bajó del mínimo {}",
+                stored_request_width,
+                available_extent,
+                fitted_width,
+                DEBUG_PANE_MIN_WIDTH
+            );
+            // El recorte solo puede achicar: nunca devuelve más que el ancho
+            // almacenado, salvo cuando lo levanta hasta el piso.
+            prop_assert!(
+                fitted_width <= stored_request_width.max(DEBUG_PANE_MIN_WIDTH),
+                "request_panel_width_for_available({}, {}) = {} agrandó el ancho \
+                 almacenado por encima de max(almacenado, mínimo) = {}",
+                stored_request_width,
+                available_extent,
+                fitted_width,
+                stored_request_width.max(DEBUG_PANE_MIN_WIDTH)
+            );
+            // Punto fijo exacto: reconciliar dos veces contra el mismo espacio
+            // disponible da el mismo resultado.
+            prop_assert_eq!(
+                request_panel_width_for_available(fitted_width, available_extent),
+                fitted_width,
+                "request_panel_width_for_available debe ser idempotente sobre su propio \
+                 resultado"
+            );
+
+            // --- 4. `response_panel_height_from_cursor` ---
+            let dragged_height = response_panel_height_from_cursor(cursor_y, area_bottom_y);
+            // A diferencia de las funciones de ancho, acá `NaN` sí entra al
+            // generador y el resultado debe quedar acotado igual: es el criterio
+            // de cierre de L35 para las funciones nuevas de la tarea 10.1.
+            prop_assert!(
+                dragged_height.is_finite(),
+                "response_panel_height_from_cursor({cursor_y}, {area_bottom_y}) = \
+                 {dragged_height} tiene que ser finito incluso con entradas no finitas"
+            );
+            prop_assert!(
+                (RESPONSE_PANE_MIN_HEIGHT..=RESPONSE_PANE_MAX_HEIGHT).contains(&dragged_height),
+                "response_panel_height_from_cursor({}, {}) = {} quedó fuera de [{}, {}]",
+                cursor_y,
+                area_bottom_y,
+                dragged_height,
+                RESPONSE_PANE_MIN_HEIGHT,
+                RESPONSE_PANE_MAX_HEIGHT
+            );
+            prop_assert_eq!(
+                dragged_height.clamp(RESPONSE_PANE_MIN_HEIGHT, RESPONSE_PANE_MAX_HEIGHT),
+                dragged_height,
+                "reaplicar el recorte de altura sobre su propio resultado debe ser un \
+                 punto fijo"
+            );
+            prop_assert_eq!(
+                response_panel_height_from_cursor(cursor_y, area_bottom_y),
+                dragged_height,
+                "response_panel_height_from_cursor debe ser determinista"
+            );
+
+            // --- 5. `response_panel_height_for_available` ---
+            let fitted_height =
+                response_panel_height_for_available(stored_response_height, available_extent);
+            prop_assert!(
+                fitted_height.is_finite(),
+                "response_panel_height_for_available({stored_response_height}, \
+                 {available_extent}) = {fitted_height} tiene que ser finito"
+            );
+            prop_assert!(
+                (RESPONSE_PANE_MIN_HEIGHT..=RESPONSE_PANE_MAX_HEIGHT).contains(&fitted_height),
+                "response_panel_height_for_available({}, {}) = {} quedó fuera de [{}, {}]",
+                stored_response_height,
+                available_extent,
+                fitted_height,
+                RESPONSE_PANE_MIN_HEIGHT,
+                RESPONSE_PANE_MAX_HEIGHT
+            );
+            if !stored_response_height.is_nan() {
+                prop_assert!(
+                    fitted_height <= stored_response_height.max(RESPONSE_PANE_MIN_HEIGHT),
+                    "response_panel_height_for_available({}, {}) = {} agrandó la altura \
+                     almacenada por encima de max(almacenada, mínimo) = {}",
+                    stored_response_height,
+                    available_extent,
+                    fitted_height,
+                    stored_response_height.max(RESPONSE_PANE_MIN_HEIGHT)
+                );
+            }
+            prop_assert_eq!(
+                response_panel_height_for_available(fitted_height, available_extent),
+                fitted_height,
+                "response_panel_height_for_available debe ser idempotente sobre su propio \
+                 resultado"
+            );
+
+            // --- 6. Las composiciones que ocurren en el producto ---
+            //
+            // Arrastrar y después reconciliar contra el espacio disponible es la
+            // secuencia real de cada frame: el arrastre escribe en la sesión y
+            // la vista recorta contra el `Size` del `responsive`. Esa
+            // composición también tiene que ser un punto fijo, o el panel
+            // "saltaría" mientras la ventana no cambia de tamaño.
+            let width_pipeline = request_panel_width_for_available(request_width, available_extent);
+            prop_assert_eq!(
+                request_panel_width_for_available(width_pipeline, available_extent),
+                width_pipeline,
+                "arrastrar y reconciliar el ancho de request debe estabilizarse en un paso"
+            );
+            prop_assert!(
+                width_pipeline >= DEBUG_PANE_MIN_WIDTH && !width_pipeline.is_nan(),
+                "el ancho de request tras arrastre y reconciliación quedó en {width_pipeline}"
+            );
+
+            let height_pipeline =
+                response_panel_height_for_available(dragged_height, available_extent);
+            prop_assert_eq!(
+                response_panel_height_for_available(height_pipeline, available_extent),
+                height_pipeline,
+                "arrastrar y reconciliar la altura de respuesta debe estabilizarse en un paso"
+            );
+            prop_assert!(
+                (RESPONSE_PANE_MIN_HEIGHT..=RESPONSE_PANE_MAX_HEIGHT).contains(&height_pipeline),
+                "la altura de respuesta tras arrastre y reconciliación quedó en \
+                 {height_pipeline}"
+            );
+        }
+    }
+
+    // --- Property 6 (Tarea 10.5, Requisitos 9.2 y 9.3) ---
+    //
+    // Acá el sujeto ya no son las funciones puras de recorte (esa es la
+    // Property 5) sino el reducer completo: `update_panel_resize` recorriendo
+    // una secuencia de arrastre real, de `ResponseHeightDividerDragStarted` a
+    // `DividerDragEnded`.
+    //
+    // Espacio de entrada y por qué es el que es:
+    //
+    // - `area_bottom_y` y las coordenadas de cada movimiento se generan con
+    //   `arb_layout_extent_with_nan` (Tarea 10.4), que ya incluye cero,
+    //   negativos, los bordes exactos de cada constante, los extremos finitos
+    //   del tipo, `±inf` y `NaN`. Para el eje Y eso es legítimo sin excepción:
+    //   `response_panel_height_from_cursor` sanea `NaN` al mínimo en vez de
+    //   propagarlo. Para el eje X es aún más fuerte que legítimo: es
+    //   precisamente el punto donde una regresión del Req 9.7 se haría visible,
+    //   porque durante un arrastre horizontal el reducer no debe mirar `x` ni
+    //   siquiera cuando vale `NaN` o `f32::MAX`.
+    // - La secuencia tiene **al menos** un `DividerDragged`. Un arrastre sin
+    //   ningún movimiento no escribe nada —el reducer solo guarda la geometría
+    //   al empezar y la limpia al soltar—, así que no marcaría la sesión sucia:
+    //   ese caso no es un redimensionamiento y ya está fijado como ejemplo en
+    //   `response_height_drag_is_ignored_without_active_drag`.
+
+    /// Secuencia acotada de movimientos del cursor durante un arrastre activo,
+    /// como pares `(x, y)` en coordenadas de ventana.
+    ///
+    /// Entre 1 y 8 movimientos: alcanza para distinguir "el último gana" de
+    /// "se acumula" y mantiene el costo por caso acotado, ya que cada caso
+    /// construye un `Midway` real.
+    fn arb_response_drag_moves() -> impl Strategy<Value = Vec<(f32, f32)>> {
+        proptest::collection::vec(
+            (arb_layout_extent_with_nan(), arb_layout_extent_with_nan()),
+            1..=8,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+        // Feature: midway-baseline-audit-and-first-vertical, Property 6: El arrastre del divisor de respuesta deja altura acotada y estado consistente
+        /// Para toda secuencia de mensajes de arrastre iniciada con
+        /// `ResponseHeightDividerDragStarted`, seguida de cualquier cantidad de
+        /// `DividerDragged { x, y }` y terminada con `DividerDragEnded`, la
+        /// altura resultante en `session.panel_sizes.response_panel_height`
+        /// queda dentro del rango soportado, `session.dirty` queda en `true`,
+        /// `panel_dragging` queda en `None` al final, y ni el ancho del
+        /// explorador ni el ancho del editor de request cambian respecto de sus
+        /// valores previos.
+        ///
+        /// Las cuatro afirmaciones se leen así:
+        ///
+        /// - **Altura acotada.** El rango es
+        ///   `[RESPONSE_PANE_MIN_HEIGHT, RESPONSE_PANE_MAX_HEIGHT]`, el mismo
+        ///   que el clamp fijo del baseline, y el valor además es finito: nunca
+        ///   queda `NaN` guardado en la sesión, ni con `NaN` en la entrada.
+        /// - **Sesión sucia.** Es la condición que dispara el autosave
+        ///   existente, que es lo único que persiste la altura como
+        ///   `panelSizes.responsePanelHeight` (Req 9.3). Sin esa marca el
+        ///   arrastre se perdería al reiniciar.
+        /// - **Arrastre cerrado.** `panel_dragging == None` al final: soltar
+        ///   siempre libera el divisor, sin importar qué pasó en el medio.
+        /// - **No interferencia (Req 9.7).** Los dos anchos verticales quedan
+        ///   exactamente en sus valores previos, con igualdad de `f32` y no con
+        ///   tolerancia: el reducer no debe tocarlos durante un arrastre
+        ///   horizontal.
+        #[test]
+        fn property_6_response_divider_drag_bounds_height_and_keeps_state_consistent(
+            area_bottom_y in arb_layout_extent_with_nan(),
+            moves in arb_response_drag_moves(),
+        ) {
+            let mut state = super::tests::build_test_midway(create_blank_draft());
+            let initial_tree_width = state.session.panel_sizes.workspace_panel_width;
+            let initial_request_width = state.session.panel_sizes.request_panel_width;
+            prop_assert!(
+                !state.session.dirty,
+                "el estado de prueba tiene que arrancar limpio para que la marca de sucio \
+                 que se afirma abajo sea la del arrastre"
+            );
+
+            let _ = update_panel_resize(
+                &mut state,
+                PanelResizeMessage::ResponseHeightDividerDragStarted { area_bottom_y },
+            );
+            prop_assert_eq!(
+                state.panel_dragging,
+                Some(PanelDragState::ResponseHeight { area_bottom_y }),
+                "iniciar el arrastre debe dejar activo el divisor horizontal"
+            );
+
+            for (x, y) in &moves {
+                let _ = update_panel_resize(
+                    &mut state,
+                    PanelResizeMessage::DividerDragged { x: *x, y: *y },
+                );
+                // Invariante durante todo el arrastre, no solo al final: el
+                // panel sigue al cursor sin salirse nunca del rango, así que
+                // ningún frame intermedio muestra una altura inválida.
+                let height = state.session.panel_sizes.response_panel_height;
+                prop_assert!(
+                    height.is_finite()
+                        && (RESPONSE_PANE_MIN_HEIGHT..=RESPONSE_PANE_MAX_HEIGHT)
+                            .contains(&height),
+                    "durante el arrastre la altura quedó en {} con cursor ({}, {}) y \
+                     area_bottom_y = {}",
+                    height,
+                    x,
+                    y,
+                    area_bottom_y
+                );
+            }
+
+            let _ = update_panel_resize(&mut state, PanelResizeMessage::DividerDragEnded);
+
+            // 1. Altura acotada y finita.
+            let final_height = state.session.panel_sizes.response_panel_height;
+            prop_assert!(
+                final_height.is_finite(),
+                "la altura persistida quedó no finita ({final_height}) tras el arrastre"
+            );
+            prop_assert!(
+                (RESPONSE_PANE_MIN_HEIGHT..=RESPONSE_PANE_MAX_HEIGHT).contains(&final_height),
+                "la altura persistida {} quedó fuera de [{}, {}]",
+                final_height,
+                RESPONSE_PANE_MIN_HEIGHT,
+                RESPONSE_PANE_MAX_HEIGHT
+            );
+            // El último movimiento es el que queda: el arrastre sigue al
+            // cursor, no acumula desplazamientos.
+            let (_, last_y) = moves[moves.len() - 1];
+            prop_assert_eq!(
+                final_height,
+                response_panel_height_from_cursor(last_y, area_bottom_y),
+                "la altura persistida debe ser la del último movimiento del arrastre"
+            );
+
+            // 2. Sesión sucia: es lo que habilita al autosave existente a
+            //    persistir `panelSizes.responsePanelHeight` (Req 9.3).
+            prop_assert!(
+                state.session.dirty,
+                "el arrastre debe marcar la sesión como sucia para que el autosave la \
+                 persista"
+            );
+
+            // 3. Arrastre cerrado.
+            prop_assert_eq!(
+                state.panel_dragging,
+                None,
+                "soltar el divisor debe dejar panel_dragging en None"
+            );
+
+            // 4. No interferencia con los divisores verticales (Req 9.7),
+            //    incluso con coordenadas X extremas o `NaN`.
+            prop_assert_eq!(
+                state.session.panel_sizes.workspace_panel_width,
+                initial_tree_width,
+                "un arrastre horizontal no debe cambiar el ancho del explorador"
+            );
+            prop_assert_eq!(
+                state.session.panel_sizes.request_panel_width,
+                initial_request_width,
+                "un arrastre horizontal no debe cambiar el ancho del editor de request"
+            );
+        }
+    }
 }
 
 /// Actualiza el estado en respuesta a un `PanelResizeMessage`.
@@ -2822,6 +4042,12 @@ fn update_panel_resize(state: &mut Midway, message: PanelResizeMessage) -> Task<
             state.panel_dragging = Some(PanelDragState::RequestResponse);
             Task::none()
         }
+        PanelResizeMessage::ResponseHeightDividerDragStarted { area_bottom_y } => {
+            // La geometría del área Debug viaja con el estado de arrastre: el
+            // listener global solo aporta la posición del cursor.
+            state.panel_dragging = Some(PanelDragState::ResponseHeight { area_bottom_y });
+            Task::none()
+        }
         PanelResizeMessage::DividerHovered(divider) => {
             state.panel_hovered = Some(divider);
             Task::none()
@@ -2832,7 +4058,12 @@ fn update_panel_resize(state: &mut Midway, message: PanelResizeMessage) -> Task<
             }
             Task::none()
         }
-        PanelResizeMessage::DividerDragged(current_x) => {
+        PanelResizeMessage::DividerDragged {
+            x: current_x,
+            y: current_y,
+        } => {
+            // El eje lo elige el divisor activo: los verticales siguen leyendo
+            // solo `x`, el horizontal solo `y`.
             match state.panel_dragging {
                 Some(PanelDragState::TreeMain) => {
                     state.session.panel_sizes.workspace_panel_width =
@@ -2844,6 +4075,15 @@ fn update_panel_resize(state: &mut Midway, message: PanelResizeMessage) -> Task<
                         current_x,
                         state.session.panel_sizes.workspace_panel_width,
                     );
+                    state.session.dirty = true;
+                }
+                Some(PanelDragState::ResponseHeight { area_bottom_y }) => {
+                    // Se escribe en cada movimiento, igual que los divisores
+                    // verticales, para que el panel siga al cursor. Al soltar,
+                    // el último valor escrito es el que persiste el autosave
+                    // existente como `panelSizes.responsePanelHeight`.
+                    state.session.panel_sizes.response_panel_height =
+                        response_panel_height_from_cursor(current_y, area_bottom_y);
                     state.session.dirty = true;
                 }
                 None => {}
@@ -2886,7 +4126,11 @@ fn build_session_snapshot(state: &Midway) -> crate::session::SessionSnapshot {
         .and_then(|index| state.tabs.get(index))
         .map(|tab| tab.id.clone());
 
-    let open_tabs = state.tabs.iter().map(RequestTabState::to_snapshot).collect();
+    let open_tabs = state
+        .tabs
+        .iter()
+        .map(RequestTabState::to_snapshot)
+        .collect();
 
     let closed_tabs = state.closed_tabs.iter().cloned().collect();
 
@@ -2896,7 +4140,7 @@ fn build_session_snapshot(state: &Midway) -> crate::session::SessionSnapshot {
         open_tabs,
         closed_tabs,
         panel_sizes: state.session.panel_sizes.clone(),
-        theme_mode: state.theme_mode,
+        theme_mode: state.theme.mode(),
         saved_at: chrono::Utc::now().to_rfc3339(),
         active_collection_id: state.active_collection_id.clone(),
     }
@@ -3087,7 +4331,9 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             };
             active_tab.draft.auth = match kind {
                 AuthKind::None => AuthConfig::None,
-                AuthKind::Bearer => AuthConfig::Bearer { token: String::new() },
+                AuthKind::Bearer => AuthConfig::Bearer {
+                    token: String::new(),
+                },
                 AuthKind::Basic => AuthConfig::Basic {
                     username: String::new(),
                     password: String::new(),
@@ -3104,7 +4350,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::Bearer { token: current_token } = &mut active_tab.draft.auth {
+            if let AuthConfig::Bearer {
+                token: current_token,
+            } = &mut active_tab.draft.auth
+            {
                 *current_token = token;
             }
             Task::none()
@@ -3113,7 +4362,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::Basic { username: current_username, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::Basic {
+                username: current_username,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_username = username;
             }
             Task::none()
@@ -3122,7 +4375,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::Basic { password: current_password, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::Basic {
+                password: current_password,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_password = password;
             }
             Task::none()
@@ -3131,7 +4388,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::ApiKey { key: current_key, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::ApiKey {
+                key: current_key, ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_key = key;
             }
             Task::none()
@@ -3140,7 +4400,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::ApiKey { value: current_value, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::ApiKey {
+                value: current_value,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_value = value;
             }
             Task::none()
@@ -3149,7 +4413,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let AuthConfig::ApiKey { placement: current_placement, .. } = &mut active_tab.draft.auth {
+            if let AuthConfig::ApiKey {
+                placement: current_placement,
+                ..
+            } = &mut active_tab.draft.auth
+            {
                 *current_placement = placement;
             }
             Task::none()
@@ -3170,7 +4438,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             });
             Task::none()
         }
-        RequestComposerMessage::KeyValueRowKeyChanged { target, row_id, key } => {
+        RequestComposerMessage::KeyValueRowKeyChanged {
+            target,
+            row_id,
+            key,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -3182,7 +4454,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::KeyValueRowValueChanged { target, row_id, value } => {
+        RequestComposerMessage::KeyValueRowValueChanged {
+            target,
+            row_id,
+            value,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -3260,7 +4536,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionSourceChanged { assertion_id, source } => {
+        RequestComposerMessage::AssertionSourceChanged {
+            assertion_id,
+            source,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -3274,7 +4553,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionOperatorChanged { assertion_id, operator } => {
+        RequestComposerMessage::AssertionOperatorChanged {
+            assertion_id,
+            operator,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -3288,7 +4570,10 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionSelectorChanged { assertion_id, selector } => {
+        RequestComposerMessage::AssertionSelectorChanged {
+            assertion_id,
+            selector,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -3298,11 +4583,18 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
                 .iter_mut()
                 .find(|assertion| assertion.id == assertion_id)
             {
-                assertion.selector = if selector.trim().is_empty() { None } else { Some(selector) };
+                assertion.selector = if selector.trim().is_empty() {
+                    None
+                } else {
+                    Some(selector)
+                };
             }
             Task::none()
         }
-        RequestComposerMessage::AssertionExpectedChanged { assertion_id, expected } => {
+        RequestComposerMessage::AssertionExpectedChanged {
+            assertion_id,
+            expected,
+        } => {
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
@@ -3370,7 +4662,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.key = key;
             }
             Task::none()
@@ -3379,7 +4677,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.value = value;
             }
             Task::none()
@@ -3388,7 +4692,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.enabled = !row.enabled;
             }
             Task::none()
@@ -3397,7 +4707,13 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            if let Some(row) = active_tab.draft.body.form_data.iter_mut().find(|row| row.id == row_id) {
+            if let Some(row) = active_tab
+                .draft
+                .body
+                .form_data
+                .iter_mut()
+                .find(|row| row.id == row_id)
+            {
                 row.kind = kind;
                 // Al cambiar de tipo se descarta el nombre de archivo
                 // previamente asociado (solo aplica a campos File).
@@ -3409,7 +4725,11 @@ fn update_request_composer(state: &mut Midway, message: RequestComposerMessage) 
             let Some(active_tab) = state.tabs.get_mut(active_index) else {
                 return Task::none();
             };
-            active_tab.draft.body.form_data.retain(|row| row.id != row_id);
+            active_tab
+                .draft
+                .body
+                .form_data
+                .retain(|row| row.id != row_id);
             Task::none()
         }
         RequestComposerMessage::UrlPasted(_)
@@ -3507,7 +4827,9 @@ async fn execute_send(
     environment: Option<EnvironmentRecord>,
     execution_id: String,
 ) -> Result<ResponseOutcome, String> {
-    let environment_name = environment.as_ref().map(|environment| environment.name.clone());
+    let environment_name = environment
+        .as_ref()
+        .map(|environment| environment.name.clone());
     let environment_rows = environment
         .as_ref()
         .map(|environment| environment.variables.as_slice())
@@ -3557,14 +4879,23 @@ async fn execute_send(
                 )
                 .await;
 
-            Ok(ResponseOutcome { response, assertions })
+            Ok(ResponseOutcome {
+                response,
+                assertions,
+            })
         }
         Err(error) => {
             let message = error.to_string();
 
             let _ = app_state
                 .repository
-                .append_history(&draft, environment_name, resolved_url, None, Some(message.clone()))
+                .append_history(
+                    &draft,
+                    environment_name,
+                    resolved_url,
+                    None,
+                    Some(message.clone()),
+                )
                 .await;
 
             Err(message)
@@ -3575,7 +4906,11 @@ async fn execute_send(
 /// Aplica el resultado de `SendCompleted` a la tab correspondiente,
 /// identificada por `tab_id` (Tarea 3.18): puede no ser la tab activa si el
 /// usuario cambió de tab mientras la request estaba en curso.
-fn handle_send_completed(state: &mut Midway, tab_id: String, result: Result<ResponseOutcome, String>) {
+fn handle_send_completed(
+    state: &mut Midway,
+    tab_id: String,
+    result: Result<ResponseOutcome, String>,
+) {
     let Some(position) = state.tabs.iter().position(|tab| tab.id == tab_id) else {
         return;
     };
@@ -3670,12 +5005,15 @@ fn handle_settings_pressed(state: &mut Midway, active_index: usize) -> Task<Mess
 
     let app_state = Arc::clone(&state.app_state);
 
-    Task::perform(compute_preview(app_state, draft, environment), move |result| {
-        Message::RequestComposer(RequestComposerMessage::PreviewLoaded {
-            tab_id: tab_id.clone(),
-            result,
-        })
-    })
+    Task::perform(
+        compute_preview(app_state, draft, environment),
+        move |result| {
+            Message::RequestComposer(RequestComposerMessage::PreviewLoaded {
+                tab_id: tab_id.clone(),
+                result,
+            })
+        },
+    )
 }
 
 /// Cuerpo async del cómputo de preview (Tarea 3.20, Requisito 2.18): carga
@@ -3694,7 +5032,9 @@ async fn compute_preview(
     draft: RequestDraft,
     environment: Option<EnvironmentRecord>,
 ) -> Result<RequestPreview, String> {
-    let environment_name = environment.as_ref().map(|environment| environment.name.clone());
+    let environment_name = environment
+        .as_ref()
+        .map(|environment| environment.name.clone());
     let environment_rows = environment
         .as_ref()
         .map(|environment| environment.variables.as_slice())
@@ -3728,7 +5068,11 @@ async fn compute_preview(
 /// Aplica el resultado de `PreviewLoaded` a la tab correspondiente,
 /// identificada por `tab_id` (Tarea 3.20): puede no ser la tab activa si el
 /// usuario cambió de tab mientras el preview se estaba calculando.
-fn handle_preview_loaded(state: &mut Midway, tab_id: String, result: Result<RequestPreview, String>) {
+fn handle_preview_loaded(
+    state: &mut Midway,
+    tab_id: String,
+    result: Result<RequestPreview, String>,
+) {
     let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
         return;
     };
@@ -3799,9 +5143,17 @@ fn handle_url_pasted(state: &mut Midway, pasted_text: String) {
 /// que exista un segundo camino (el shortcut de teclado) que se salte el
 /// aviso.
 fn close_tab_or_prompt_unsaved_changes(state: &mut Midway, tab_id: String) {
-    let is_dirty = state.tabs.iter().find(|tab| tab.id == tab_id).is_some_and(tab_is_dirty);
+    let is_dirty = state
+        .tabs
+        .iter()
+        .find(|tab| tab.id == tab_id)
+        .is_some_and(tab_is_dirty);
     if is_dirty {
-        state.unsaved_changes_prompt = Some(UnsavedChangesPromptState { tab_id, saving: false, error: None });
+        state.unsaved_changes_prompt = Some(UnsavedChangesPromptState {
+            tab_id,
+            saving: false,
+            error: None,
+        });
         return;
     }
     handle_tab_closed(state, &tab_id);
@@ -3882,12 +5234,7 @@ fn saved_request_location(
             .requests
             .iter()
             .find(|request| request.id == request_id)
-            .map(|request| {
-                (
-                    collection.collection.id.clone(),
-                    request.folder_id.clone(),
-                )
-            })
+            .map(|request| (collection.collection.id.clone(), request.folder_id.clone()))
     })
 }
 
@@ -3905,13 +5252,17 @@ fn open_save_request_prompt(state: &mut Midway) {
         .as_ref()
         .map(|(collection_id, _)| collection_id.clone())
         .or_else(|| {
-            state.active_collection_id.as_ref().filter(|active_id| {
-                state
-                    .workspace
-                    .collections
-                    .iter()
-                    .any(|collection| collection.collection.id == **active_id)
-            }).cloned()
+            state
+                .active_collection_id
+                .as_ref()
+                .filter(|active_id| {
+                    state
+                        .workspace
+                        .collections
+                        .iter()
+                        .any(|collection| collection.collection.id == **active_id)
+                })
+                .cloned()
         })
         .or_else(|| {
             state
@@ -3972,7 +5323,10 @@ fn handle_save_request_confirmed(state: &mut Midway) -> Task<Message> {
     };
 
     if folder_id.as_ref().is_some_and(|folder_id| {
-        !collection.folders.iter().any(|folder| folder.id == *folder_id)
+        !collection
+            .folders
+            .iter()
+            .any(|folder| folder.id == *folder_id)
     }) {
         if let Some(prompt) = state.save_request_prompt.as_mut() {
             prompt.error = Some("La carpeta seleccionada ya no existe.".to_string());
@@ -3995,13 +5349,7 @@ fn handle_save_request_confirmed(state: &mut Midway) -> Task<Message> {
 
     let app_state = Arc::clone(&state.app_state);
     Task::perform(
-        persist_request_from_composer(
-            app_state,
-            tab_id,
-            draft,
-            collection_id,
-            folder_id,
-        ),
+        persist_request_from_composer(app_state, tab_id, draft, collection_id, folder_id),
         |result| Message::RequestComposer(RequestComposerMessage::SaveCompleted(result)),
     )
 }
@@ -4038,10 +5386,7 @@ async fn persist_request_from_composer(
     })
 }
 
-fn handle_save_request_completed(
-    state: &mut Midway,
-    result: Result<RequestSaveOutcome, String>,
-) {
+fn handle_save_request_completed(state: &mut Midway, result: Result<RequestSaveOutcome, String>) {
     match result {
         Ok(outcome) => {
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == outcome.tab_id) {
@@ -4049,8 +5394,8 @@ fn handle_save_request_completed(
                 tab.saved_draft = Some(outcome.saved_draft);
             }
 
-            let collection_changed = state.active_collection_id.as_deref()
-                != Some(outcome.collection_id.as_str());
+            let collection_changed =
+                state.active_collection_id.as_deref() != Some(outcome.collection_id.as_str());
             state.workspace = outcome.workspace;
             state.active_collection_id = Some(outcome.collection_id);
             if collection_changed {
@@ -4105,21 +5450,27 @@ fn handle_unsaved_changes_save_requested(state: &mut Midway) -> Task<Message> {
     // contiene ese id de request en el snapshot en memoria, para
     // actualizar el MISMO registro en la MISMA collection en vez de
     // moverlo a la collection de fallback.
-    let existing_collection_id = tab.saved_draft.is_some().then(|| {
-        state.workspace.collections.iter().find_map(|collection| {
-            collection
-                .requests
-                .iter()
-                .find(|request| Some(&request.id) == draft.id.as_ref())
-                .map(|_| collection.collection.id.clone())
+    let existing_collection_id = tab
+        .saved_draft
+        .is_some()
+        .then(|| {
+            state.workspace.collections.iter().find_map(|collection| {
+                collection
+                    .requests
+                    .iter()
+                    .find(|request| Some(&request.id) == draft.id.as_ref())
+                    .map(|_| collection.collection.id.clone())
+            })
         })
-    }).flatten();
+        .flatten();
 
     let app_state = Arc::clone(&state.app_state);
 
     Task::perform(
         persist_tab_draft(app_state, tab_id.clone(), draft, existing_collection_id),
-        move |result| Message::RequestComposer(RequestComposerMessage::UnsavedChangesSaveCompleted(result)),
+        move |result| {
+            Message::RequestComposer(RequestComposerMessage::UnsavedChangesSaveCompleted(result))
+        },
     )
 }
 
@@ -4150,11 +5501,17 @@ async fn persist_tab_draft(
     let collection_id = match existing_collection_id {
         Some(collection_id) => collection_id,
         None => {
-            let snapshot = app_state.repository.export_full_snapshot().await.map_err(|error| error.to_string())?;
+            let snapshot = app_state
+                .repository
+                .export_full_snapshot()
+                .await
+                .map_err(|error| error.to_string())?;
             let existing = snapshot
                 .collections
                 .iter()
-                .find(|collection| collection.collection.name == UNSAVED_CHANGES_DEFAULT_COLLECTION_NAME)
+                .find(|collection| {
+                    collection.collection.name == UNSAVED_CHANGES_DEFAULT_COLLECTION_NAME
+                })
                 .map(|collection| collection.collection.id.clone());
 
             match existing {
@@ -4186,7 +5543,10 @@ async fn persist_tab_draft(
         .await
         .map_err(|error| error.to_string())?;
 
-    Ok(SavedRequestSaveOutcome { tab_id, saved_draft: saved_record.draft })
+    Ok(SavedRequestSaveOutcome {
+        tab_id,
+        saved_draft: saved_record.draft,
+    })
 }
 
 /// Aplica el resultado de `UnsavedChangesSaveCompleted` (Tarea 11.10,
@@ -4194,7 +5554,10 @@ async fn persist_tab_draft(
 /// persistido y cierra la tab (misma lógica que `handle_tab_closed`); en
 /// error, deja el aviso abierto con el mensaje de error visible, sin cerrar
 /// la tab ni mutar `draft`/`saved_draft`.
-fn handle_unsaved_changes_save_completed(state: &mut Midway, result: Result<SavedRequestSaveOutcome, String>) {
+fn handle_unsaved_changes_save_completed(
+    state: &mut Midway,
+    result: Result<SavedRequestSaveOutcome, String>,
+) {
     match result {
         Ok(outcome) => {
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == outcome.tab_id) {
@@ -4316,7 +5679,10 @@ fn update_keyboard(state: &mut Midway, message: KeyboardMessage) -> Task<Message
 /// Actualiza el estado en respuesta a un `ResponseInspectorMessage` (Tarea
 /// 3.9). Por ahora solo cubre el cambio de tab (Body/Headers/Tests); el
 /// contenido de la respuesta se popula en la Tarea 3.18.
-fn update_response_inspector(state: &mut Midway, message: ResponseInspectorMessage) -> Task<Message> {
+fn update_response_inspector(
+    state: &mut Midway,
+    message: ResponseInspectorMessage,
+) -> Task<Message> {
     let Some(active_tab) = state.active_tab.and_then(|index| state.tabs.get_mut(index)) else {
         return Task::none();
     };
@@ -4422,7 +5788,10 @@ fn update_workspace(state: &mut Midway, message: WorkspaceMessage) -> Task<Messa
             handle_environment_saved_result(state, result);
             Task::none()
         }
-        WorkspaceMessage::EnvironmentDeletedResult { environment_id, result } => {
+        WorkspaceMessage::EnvironmentDeletedResult {
+            environment_id,
+            result,
+        } => {
             handle_environment_deleted_result(state, environment_id, result);
             Task::none()
         }
@@ -4500,9 +5869,9 @@ fn validate_environment_name(
         ));
     }
 
-    let is_duplicate = environments.iter().any(|environment| {
-        environment.name == name && Some(environment.id.as_str()) != editing_id
-    });
+    let is_duplicate = environments
+        .iter()
+        .any(|environment| environment.name == name && Some(environment.id.as_str()) != editing_id);
     if is_duplicate {
         return Err(format!("Ya existe un environment llamado \"{name}\"."));
     }
@@ -4615,7 +5984,10 @@ fn handle_environment_saved_result(state: &mut Midway, result: Result<Environmen
 /// asíncrona a `delete_environment`, identificando el environment por
 /// `environment_id` (no por el formulario en curso, que puede estar
 /// editando un environment distinto).
-fn handle_environment_delete_requested(state: &mut Midway, environment_id: String) -> Task<Message> {
+fn handle_environment_delete_requested(
+    state: &mut Midway,
+    environment_id: String,
+) -> Task<Message> {
     state.workspace_panel.environment_busy = true;
 
     let app_state = Arc::clone(&state.app_state);
@@ -4634,7 +6006,10 @@ fn handle_environment_delete_requested(state: &mut Midway, environment_id: Strin
 
 /// Cuerpo async de `delete_environment` (Tarea 7.2): delega directamente en
 /// `infra::sqlite_repository::SqliteRepository::delete_environment`.
-async fn delete_environment(app_state: Arc<AppState>, environment_id: String) -> Result<(), String> {
+async fn delete_environment(
+    app_state: Arc<AppState>,
+    environment_id: String,
+) -> Result<(), String> {
     app_state
         .repository
         .delete_environment(environment_id)
@@ -4650,7 +6025,11 @@ async fn delete_environment(app_state: Arc<AppState>, environment_id: String) ->
 /// (`draft.environment_id`), dejando dicha tab sin environment activo. En
 /// caso de error, lo muestra en `environment_form.error` sin mutar la
 /// lista.
-fn handle_environment_deleted_result(state: &mut Midway, environment_id: String, result: Result<(), String>) {
+fn handle_environment_deleted_result(
+    state: &mut Midway,
+    environment_id: String,
+    result: Result<(), String>,
+) {
     state.workspace_panel.environment_busy = false;
 
     match result {
@@ -4660,7 +6039,9 @@ fn handle_environment_deleted_result(state: &mut Midway, environment_id: String,
                 .environments
                 .retain(|environment| environment.id != environment_id);
 
-            if state.workspace_panel.environment_form.editing_id.as_deref() == Some(environment_id.as_str()) {
+            if state.workspace_panel.environment_form.editing_id.as_deref()
+                == Some(environment_id.as_str())
+            {
                 state.workspace_panel.environment_form = EnvironmentFormState::default();
             }
 
@@ -4745,10 +6126,8 @@ fn handle_workspace_snapshot_loaded(state: &mut Midway, result: Result<Workspace
             // 6.1-6.4): use the current active_collection_id (which may hold
             // the session-restored value) as the session_id hint.
             let session_id = state.active_collection_id.clone();
-            state.active_collection_id = resolve_startup_collection(
-                &state.workspace.collections,
-                session_id.as_deref(),
-            );
+            state.active_collection_id =
+                resolve_startup_collection(&state.workspace.collections, session_id.as_deref());
 
             // Req 6.8: fall back to Debug if active collection was removed.
             enforce_top_bar_mode_after_collection_change(state);
@@ -4779,8 +6158,9 @@ fn handle_export_submitted(state: &mut Midway) -> Task<Message> {
     }
 
     if format == WorkspaceExportFormat::PostmanCollectionV21 && collection_id.is_empty() {
-        state.workspace_panel.export_form.result_message =
-            Some("Para exportar Postman v2.1 necesitás indicar el id de la collection.".to_string());
+        state.workspace_panel.export_form.result_message = Some(
+            "Para exportar Postman v2.1 necesitás indicar el id de la collection.".to_string(),
+        );
         state.workspace_panel.export_form.result_is_error = true;
         return Task::none();
     }
@@ -4789,11 +6169,16 @@ fn handle_export_submitted(state: &mut Midway) -> Task<Message> {
     state.workspace_panel.export_form.result_message = None;
 
     let app_state = Arc::clone(&state.app_state);
-    let collection_id_option = if collection_id.is_empty() { None } else { Some(collection_id) };
+    let collection_id_option = if collection_id.is_empty() {
+        None
+    } else {
+        Some(collection_id)
+    };
 
-    Task::perform(export_workspace_data(app_state, path, format, collection_id_option), |result| {
-        Message::Workspace(WorkspaceMessage::ExportCompleted(result))
-    })
+    Task::perform(
+        export_workspace_data(app_state, path, format, collection_id_option),
+        |result| Message::Workspace(WorkspaceMessage::ExportCompleted(result)),
+    )
 }
 
 /// Cuerpo async de la orquestación de export de la sección Data (Tarea 7.6,
@@ -4824,20 +6209,29 @@ async fn export_workspace_data(
             serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string())?
         }
         WorkspaceExportFormat::PostmanCollectionV21 => {
-            let collection_id = collection_id
-                .ok_or_else(|| "Para exportar Postman v2.1 necesitás elegir una collection.".to_string())?;
+            let collection_id = collection_id.ok_or_else(|| {
+                "Para exportar Postman v2.1 necesitás elegir una collection.".to_string()
+            })?;
             let collection = app_state
                 .repository
                 .get_collection_with_requests(&collection_id)
                 .await
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("No existe la collection {collection_id}"))?;
-            serde_json::to_string_pretty(&export_postman_collection(&collection).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?
+            serde_json::to_string_pretty(
+                &export_postman_collection(&collection).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?
         }
     };
 
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        tokio::fs::create_dir_all(parent).await.map_err(|error| error.to_string())?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| error.to_string())?;
     }
 
     tokio::fs::write(&path, payload.as_bytes())
@@ -4847,7 +6241,7 @@ async fn export_workspace_data(
     Ok(format!(
         "Exportado a {} ({} bytes).",
         path.to_string_lossy(),
-        payload.as_bytes().len()
+        payload.len()
     ))
 }
 
@@ -4903,9 +6297,10 @@ fn handle_import_submitted(state: &mut Midway) -> Task<Message> {
 
     let app_state = Arc::clone(&state.app_state);
 
-    Task::perform(import_workspace_data(app_state, payload, format), |result| {
-        Message::Workspace(WorkspaceMessage::ImportCompleted(result))
-    })
+    Task::perform(
+        import_workspace_data(app_state, payload, format),
+        |result| Message::Workspace(WorkspaceMessage::ImportCompleted(result)),
+    )
 }
 
 /// Cuerpo async de la orquestación de import de la sección Data (Tarea 7.7,
@@ -4933,7 +6328,8 @@ async fn import_workspace_data(
     requested_format: WorkspaceImportFormat,
 ) -> Result<(WorkspaceSnapshot, String), String> {
     let payload = parse_json_or_yaml_payload(&payload_text).map_err(|error| error.to_string())?;
-    let detected_format = detect_import_format(&payload, requested_format).map_err(|error| error.to_string())?;
+    let detected_format =
+        detect_import_format(&payload, requested_format).map_err(|error| error.to_string())?;
 
     let existing_snapshot = app_state
         .repository
@@ -4941,26 +6337,34 @@ async fn import_workspace_data(
         .await
         .map_err(|error| error.to_string())?;
 
-    let mut existing_environment_names: HashSet<String> =
-        existing_snapshot.environments.iter().map(|environment| environment.name.clone()).collect();
+    let mut existing_environment_names: HashSet<String> = existing_snapshot
+        .environments
+        .iter()
+        .map(|environment| environment.name.clone())
+        .collect();
     let mut existing_request_names: HashSet<String> = existing_snapshot
         .collections
         .iter()
         .flat_map(|collection| collection.requests.iter())
         .map(|request| request.name.clone())
         .collect();
-    let mut existing_collection_names: HashSet<String> =
-        existing_snapshot.collections.iter().map(|collection| collection.collection.name.clone()).collect();
+    let mut existing_collection_names: HashSet<String> = existing_snapshot
+        .collections
+        .iter()
+        .map(|collection| collection.collection.name.clone())
+        .collect();
 
     let message = match detected_format {
         WorkspaceImportFormat::NativeWorkspaceV1 => {
-            let bundle: NativeWorkspaceBundle = parse_native_bundle(payload).map_err(|error| error.to_string())?;
+            let bundle: NativeWorkspaceBundle =
+                parse_native_bundle(payload).map_err(|error| error.to_string())?;
             let mut requests_imported = 0_u64;
             let mut environments_imported = 0_u64;
             let collections_imported = bundle.snapshot.collections.len() as u64;
 
             for mut environment in bundle.snapshot.environments {
-                environment.name = unique_name_against(&existing_environment_names, &environment.name);
+                environment.name =
+                    unique_name_against(&existing_environment_names, &environment.name);
                 existing_environment_names.insert(environment.name.clone());
                 app_state
                     .repository
@@ -4975,7 +6379,8 @@ async fn import_workspace_data(
             }
 
             for collection in bundle.snapshot.collections {
-                let collection_name = unique_name_against(&existing_collection_names, &collection.collection.name);
+                let collection_name =
+                    unique_name_against(&existing_collection_names, &collection.collection.name);
                 existing_collection_names.insert(collection_name.clone());
                 let created_collection = app_state
                     .repository
@@ -5021,10 +6426,14 @@ async fn import_workspace_data(
         }
         WorkspaceImportFormat::OpenApiV3 => {
             let parsed = import_openapi_document(&payload).map_err(|error| error.to_string())?;
-            let imported_requests = parsed.requests.into_iter().map(|draft| ImportedRequest {
-                draft,
-                folder_id: None,
-            }).collect();
+            let imported_requests = parsed
+                .requests
+                .into_iter()
+                .map(|draft| ImportedRequest {
+                    draft,
+                    folder_id: None,
+                })
+                .collect();
             import_http_collection(
                 &app_state,
                 parsed.collection_name,
@@ -5058,6 +6467,15 @@ async fn import_workspace_data(
 /// environment nuevo (también con nombre diferenciado si colisiona),
 /// replicando la lógica de `apply_imported_http_collection` de
 /// `src-tauri/src/commands/mod.rs` en modo "merge".
+// `clippy::too_many_arguments` (8/7) es estructural: satisfacerlo exige
+// agrupar los parámetros en un struct nuevo, o sea un refactor real de la
+// firma y de todos sus call sites. Esta función ya fue tocada por la spec
+// vigente y su comportamiento de deduplicación de nombres está fijado por
+// tests, así que reestructurar la firma sólo para callar el lint agrega
+// riesgo de regresión sin ningún beneficio de comportamiento. Se deja el
+// `allow` acotado a esta función hasta que exista una tarea de refactor
+// dedicada.
+#[allow(clippy::too_many_arguments)]
 async fn import_http_collection(
     app_state: &Arc<AppState>,
     default_collection_name: String,
@@ -5109,7 +6527,10 @@ async fn import_http_collection(
     let environments_imported = if variables.is_empty() {
         0
     } else {
-        let environment_name = unique_name_against(existing_environment_names, &format!("{} vars", collection.name));
+        let environment_name = unique_name_against(
+            existing_environment_names,
+            &format!("{} vars", collection.name),
+        );
         existing_environment_names.insert(environment_name.clone());
         app_state
             .repository
@@ -5157,7 +6578,10 @@ fn unique_name_against(existing_names: &HashSet<String>, candidate: &str) -> Str
 /// formulario; en caso de error, muestra el mensaje de error en
 /// `import_form.result_message` sin mutar `state.workspace` (Requisito
 /// 4.5: "sin modificar el estado de datos existente").
-fn handle_import_completed(state: &mut Midway, result: Result<(WorkspaceSnapshot, String), String>) {
+fn handle_import_completed(
+    state: &mut Midway,
+    result: Result<(WorkspaceSnapshot, String), String>,
+) {
     state.workspace_panel.import_form.busy = false;
 
     match result {
@@ -5190,7 +6614,9 @@ mod import_name_collision_tests {
     /// existente, así que se devuelve exactamente igual, sin sufijo.
     #[test]
     fn unique_name_against_returns_candidate_unchanged_when_no_collision() {
-        let existing: HashSet<String> = ["Alpha".to_string(), "Beta".to_string()].into_iter().collect();
+        let existing: HashSet<String> = ["Alpha".to_string(), "Beta".to_string()]
+            .into_iter()
+            .collect();
 
         assert_eq!(unique_name_against(&existing, "Gamma"), "Gamma");
     }
@@ -5230,25 +6656,30 @@ mod import_name_collision_tests {
 }
 
 /// Construye el contenido principal según el foco de presentación actual.
-pub fn main_content_pane<'a>(state: &'a Midway, ds: DesignSystem) -> Element<'a, Message> {
+///
+/// `window_height` es el alto de la ventana en coordenadas lógicas, medido por
+/// el `responsive` de `view`. Solo viaja hacia abajo para que el divisor
+/// horizontal del área Debug pueda expresar su borde inferior en las mismas
+/// coordenadas en las que el listener global reporta `CursorMoved`.
+pub fn main_content_pane<'a>(
+    state: &'a Midway,
+    ds: DesignSystem,
+    window_height: f32,
+) -> Element<'a, Message> {
     // Top_Bar: breadcrumb + mode tabs + theme toggle (Tarea 12.1).
-    let top_bar = guarded_view("TopBar", || {
-        crate::ui::top_bar::view(state, &ds)
-    });
+    let top_bar = guarded_view("TopBar", || crate::ui::top_bar::view(state, &ds));
 
     let body: Element<'a, Message> = if crate::ui::onboarding::should_show_onboarding(state) {
         // Onboarding view: shown instead of Composer/Inspector when there
         // are no collections and the focus is RequestTab (Requirements 1.1,
         // 1.2, 1.4).
-        guarded_view("Onboarding", || {
-            crate::ui::onboarding::view(&ds)
-        })
+        guarded_view("Onboarding", || crate::ui::onboarding::view(&ds))
     } else {
         match state.main_content_focus {
             MainContentFocus::RequestTab => {
                 // Route by top_bar_mode (Req 6.4, 6.5).
                 match state.top_bar_mode {
-                    TopBarMode::Debug => debug_content(state, &ds),
+                    TopBarMode::Debug => debug_content(state, &ds, window_height),
                     TopBarMode::Test => test_content(state, &ds),
                 }
             }
@@ -5271,7 +6702,15 @@ pub fn main_content_pane<'a>(state: &'a Midway, ds: DesignSystem) -> Element<'a,
 
 /// Debug mode: Request_Composer + Response_Inspector (Req 6.4).
 /// Shown even without an active collection.
-fn debug_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message> {
+///
+/// `window_height` se recibe del `responsive` de `view` y se pasa tal cual a
+/// `debug_split_content`, que lo usa como borde inferior del área Debug para el
+/// divisor horizontal del panel de respuesta (Req 9.2).
+fn debug_content<'a>(
+    state: &'a Midway,
+    ds: &DesignSystem,
+    window_height: f32,
+) -> Element<'a, Message> {
     match state.active_tab {
         Some(active_tab_index) if active_tab_index < state.tabs.len() => {
             let toolbar = container(guarded_view("RequestToolbar", || {
@@ -5287,6 +6726,8 @@ fn debug_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Messag
                     design_system,
                     debug_pane_layout(size.width),
                     size.width,
+                    size.height,
+                    window_height,
                 )
             });
 
@@ -5297,15 +6738,16 @@ fn debug_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Messag
                 .into()
         }
         _ => {
-            let text_color = ds.palette.text_secondary;
-            container(
-                text("Midway Desktop — no hay tabs abiertas.").color(text_color),
+            // Req 9.5 / 14.2: en vez de informar la ausencia sin salida, el
+            // estado vacío ofrece la acción real de abrir una tab en blanco
+            // (`KeyboardMessage::NewBlankTabRequested`, el mismo mensaje que
+            // Ctrl+Shift+N y que "+ Request" del explorador).
+            empty_state::view(
+                empty_state::no_open_requests(Message::Keyboard(
+                    KeyboardMessage::NewBlankTabRequested,
+                )),
+                ds,
             )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
         }
     }
 }
@@ -5314,17 +6756,29 @@ fn debug_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Messag
 // inspector siguen siendo utilizables con unos 280 px cada uno.
 const DEBUG_HORIZONTAL_BREAKPOINT: f32 = 560.0;
 
-/// Separador vertical con una zona de agarre cómoda y una línea visual
-/// centrada. El listener global mantiene el drag aunque el cursor salga de
-/// estos pocos píxeles.
-fn vertical_resize_divider<'a>(
-    ds: &DesignSystem,
-    target: PanelDragState,
-    active: bool,
-    hovered: bool,
-    hit_width: f32,
-) -> Element<'a, Message> {
-    let line_color = if active {
+/// Mensaje de inicio de arrastre correspondiente a cada divisor.
+///
+/// Para `ResponseHeight` el mensaje propaga el `area_bottom_y` que el divisor
+/// ya conoce, de modo que la geometría del área Debug llega al reducer sin
+/// estado paralelo en `Midway`.
+fn divider_drag_started_message(target: PanelDragState) -> PanelResizeMessage {
+    match target {
+        PanelDragState::TreeMain => PanelResizeMessage::TreeDividerDragStarted,
+        PanelDragState::RequestResponse => PanelResizeMessage::RequestResponseDividerDragStarted,
+        PanelDragState::ResponseHeight { area_bottom_y } => {
+            PanelResizeMessage::ResponseHeightDividerDragStarted { area_bottom_y }
+        }
+    }
+}
+
+/// Color de la línea de un divisor según su estado de interacción.
+///
+/// Los tres estados —reposo `accent` con α 0.18, hover con α 0.75 y activo
+/// `accent` sólido— son los del baseline, extraídos acá para que el divisor
+/// horizontal los reutilice tal cual en vez de redefinirlos: así se lee como
+/// parte del mismo sistema y un cambio de estilo se hace en un solo lugar.
+fn divider_line_color(ds: &DesignSystem, active: bool, hovered: bool) -> iced::Color {
+    if active {
         ds.palette.accent
     } else if hovered {
         iced::Color {
@@ -5336,8 +6790,32 @@ fn vertical_resize_divider<'a>(
             a: 0.18,
             ..ds.palette.accent
         }
-    };
-    let line_width = if active { 3.0 } else { 2.0 };
+    }
+}
+
+/// Grosor de la línea de un divisor: 3 px mientras se arrastra, 2 px en
+/// reposo y en hover. Compartido por ambos divisores por el mismo motivo que
+/// [`divider_line_color`].
+fn divider_line_thickness(active: bool) -> f32 {
+    if active {
+        3.0
+    } else {
+        2.0
+    }
+}
+
+/// Separador vertical con una zona de agarre cómoda y una línea visual
+/// centrada. El listener global mantiene el drag aunque el cursor salga de
+/// estos pocos píxeles.
+fn vertical_resize_divider<'a>(
+    ds: &DesignSystem,
+    target: PanelDragState,
+    active: bool,
+    hovered: bool,
+    hit_width: f32,
+) -> Element<'a, Message> {
+    let line_color = divider_line_color(ds, active, hovered);
+    let line_width = divider_line_thickness(active);
     let line = container(column![])
         .width(Length::Fixed(line_width))
         .height(Length::Fill)
@@ -5346,12 +6824,7 @@ fn vertical_resize_divider<'a>(
             ..container::Style::default()
         });
 
-    let on_press = match target {
-        PanelDragState::TreeMain => PanelResizeMessage::TreeDividerDragStarted,
-        PanelDragState::RequestResponse => {
-            PanelResizeMessage::RequestResponseDividerDragStarted
-        }
-    };
+    let on_press = divider_drag_started_message(target);
 
     mouse_area(
         container(line)
@@ -5371,6 +6844,54 @@ fn vertical_resize_divider<'a>(
     .into()
 }
 
+/// Separador horizontal, simétrico de [`vertical_resize_divider`]: misma zona
+/// de agarre cómoda, misma línea centrada y los mismos tres estados visuales
+/// (`divider_line_color` / `divider_line_thickness`), con los ejes
+/// intercambiados —`width(Length::Fill)` / `height(Length::Fixed(hit_height))`
+/// y `align_y(Vertical::Center)`— y el cursor `ResizingVertically`.
+///
+/// `target` llega ya con el `area_bottom_y` que la vista calculó a partir del
+/// `Size` del `responsive`, y `divider_drag_started_message` lo propaga al
+/// reducer en el mensaje de inicio de arrastre. Igual que en el divisor
+/// vertical, el listener global mantiene el arrastre aunque el cursor salga de
+/// estos pocos píxeles.
+fn horizontal_resize_divider<'a>(
+    ds: &DesignSystem,
+    target: PanelDragState,
+    active: bool,
+    hovered: bool,
+    hit_height: f32,
+) -> Element<'a, Message> {
+    let line_color = divider_line_color(ds, active, hovered);
+    let line_height = divider_line_thickness(active);
+    let line = container(column![])
+        .width(Length::Fill)
+        .height(Length::Fixed(line_height))
+        .style(move |_theme| container::Style {
+            background: Some(line_color.into()),
+            ..container::Style::default()
+        });
+
+    let on_press = divider_drag_started_message(target);
+
+    mouse_area(
+        container(line)
+            .width(Length::Fill)
+            .height(Length::Fixed(hit_height))
+            .align_y(iced::alignment::Vertical::Center),
+    )
+    .on_press(Message::PanelResize(on_press))
+    .on_release(Message::PanelResize(PanelResizeMessage::DividerDragEnded))
+    .on_enter(Message::PanelResize(PanelResizeMessage::DividerHovered(
+        target,
+    )))
+    .on_exit(Message::PanelResize(PanelResizeMessage::DividerUnhovered(
+        target,
+    )))
+    .interaction(iced::mouse::Interaction::ResizingVertically)
+    .into()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DebugPaneLayout {
     SideBySide,
@@ -5385,15 +6906,40 @@ fn debug_pane_layout(available_width: f32) -> DebugPaneLayout {
     }
 }
 
+/// Construye el contenido del área Debug: editor de request e inspector de
+/// respuesta, en columnas o apilados según `layout`.
+///
+/// `available_width` y `available_height` son el `Size` del `responsive` propio
+/// del área y acotan el reparto entre paneles. `window_height` es el alto de la
+/// ventana, medido por el `responsive` de `view`, y solo se usa para ubicar el
+/// divisor horizontal del panel de respuesta en las coordenadas del cursor
+/// (Req 9.2).
 fn debug_split_content<'a>(
     state: &'a Midway,
     active_tab_index: usize,
     ds: DesignSystem,
     layout: DebugPaneLayout,
     available_width: f32,
+    available_height: f32,
+    window_height: f32,
 ) -> Element<'a, Message> {
-    let background = ds.palette.background_primary;
-    let border_color = ds.palette.border;
+    // Jerarquía visual por elevación (Req 9.1, diseño §8.2): el editor de
+    // request queda en el nivel base (`background_primary`) y el inspector de
+    // respuesta un nivel por encima (`surface_elevated`). El explorador ocupa
+    // el nivel intermedio (`background_secondary`), aplicado en
+    // `request_tree_pane::pane_shell`. Los tres niveles salen de la escala ya
+    // existente de `DesignSystem`: no se introduce ningún color de marca nuevo
+    // (Req 9.8).
+    //
+    // El inspector lleva un `iced::Border` completo, uniforme en los cuatro
+    // lados, y no una franja como el explorador: es una superficie elevada
+    // rodeada por los otros dos niveles, así que el contorno cerrado es
+    // justamente lo que la separa: al explorador, en cambio, un contorno
+    // cerrado lo encajonaría contra los bordes de la ventana, y por eso ahí el
+    // borde es una franja de un solo lado.
+    let request_background = ds.palette.background_primary;
+    let response_background = ds.palette.surface_elevated;
+    let separator_color = ds.palette.border;
 
     let request_pane = container(scrollable(guarded_view("RequestEditor", || {
         request_composer::editor(state, active_tab_index, &ds)
@@ -5402,7 +6948,7 @@ fn debug_split_content<'a>(
     .height(Length::Fill)
     .padding([ds.spacing.sm, ds.spacing.md])
     .style(move |_theme| container::Style {
-        background: Some(background.into()),
+        background: Some(request_background.into()),
         ..container::Style::default()
     });
 
@@ -5413,7 +6959,12 @@ fn debug_split_content<'a>(
     .height(Length::Fill)
     .padding([ds.spacing.sm, ds.spacing.md])
     .style(move |_theme| container::Style {
-        background: Some(background.into()),
+        background: Some(response_background.into()),
+        border: iced::Border {
+            color: separator_color,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
         ..container::Style::default()
     });
 
@@ -5439,18 +6990,26 @@ fn debug_split_content<'a>(
                 .into()
         }
         DebugPaneLayout::Stacked => {
-            let divider = container(text(""))
-                .width(Length::Fill)
-                .height(Length::Fixed(1.0))
-                .style(move |_theme| container::Style {
-                    background: Some(border_color.into()),
-                    ..container::Style::default()
-                });
-            let response_height = state
-                .session
-                .panel_sizes
-                .response_panel_height
-                .clamp(180.0, 360.0);
+            // El área Debug es el último elemento `Fill` de la columna y no hay
+            // cromo por debajo, así que su borde inferior coincide con el de la
+            // ventana. `area_bottom_y` es entonces el alto de la ventana, en las
+            // mismas coordenadas lógicas en las que el listener global reporta
+            // `CursorMoved`: es lo que le permite al reducer convertir la Y del
+            // cursor en alto de panel. `available_height` (el `Size` del
+            // `responsive` del área) es el alto del área en sí, que es lo que
+            // acota el reparto entre editor e inspector.
+            let area_bottom_y = window_height;
+            let divider = horizontal_resize_divider(
+                &ds,
+                PanelDragState::ResponseHeight { area_bottom_y },
+                state.panel_dragging == Some(PanelDragState::ResponseHeight { area_bottom_y }),
+                state.panel_hovered == Some(PanelDragState::ResponseHeight { area_bottom_y }),
+                RESPONSE_DIVIDER_HIT_HEIGHT,
+            );
+            let response_height = response_panel_height_for_available(
+                state.session.panel_sizes.response_panel_height,
+                available_height,
+            );
 
             column![
                 request_pane,
@@ -5467,7 +7026,136 @@ fn debug_split_content<'a>(
 
 #[cfg(test)]
 mod debug_layout_tests {
+    //! Feature: midway-baseline-audit-and-first-vertical, Tarea 4.5
+    //! Requisito 6.4.
+    //!
+    //! Test_Caracterización del baseline SIN CAMBIOS sobre
+    //! `debug_pane_layout`. No se modifica código de producción: ni la
+    //! función ni `DEBUG_HORIZONTAL_BREAKPOINT` cambian, y todo lo que se
+    //! agrega acá es `#[cfg(test)]`.
+    //!
+    //! Los dos tests de ejemplo preexistentes se preservan con sus valores
+    //! esperados originales.
+    //!
+    //! Headless por construcción: `debug_pane_layout` es aritmética pura
+    //! sobre un `f32`, sin ventana, sin disco y sin red.
+
     use super::*;
+    use proptest::prelude::*;
+
+    /// Ancho disponible arbitrario. La estrategia se construye para cubrir
+    /// a propósito las clases de entrada que el Requisito 6.4 nombra y que
+    /// un rango uniforme casi nunca alcanzaría:
+    ///
+    /// - anchos "normales" a ambos lados del breakpoint,
+    /// - cero (y `-0.0`, que en `f32` es un valor distinto con la misma
+    ///   comparación),
+    /// - negativos,
+    /// - los vecinos inmediatos del breakpoint, donde vive el límite real
+    ///   de la decisión,
+    /// - los extremos finitos del tipo,
+    /// - y los tres valores no finitos: `NaN`, `+inf` y `-inf`.
+    fn arb_available_width() -> impl Strategy<Value = f32> {
+        prop_oneof![
+            // Anchos plausibles de ventana, incluyendo negativos.
+            6 => -2_000.0f32..6_000.0f32,
+            // Ceros y frontera exacta del breakpoint con sus vecinos.
+            3 => prop_oneof![
+                Just(0.0f32),
+                Just(-0.0f32),
+                Just(DEBUG_HORIZONTAL_BREAKPOINT),
+                Just(f32::from_bits(DEBUG_HORIZONTAL_BREAKPOINT.to_bits() - 1)),
+                Just(f32::from_bits(DEBUG_HORIZONTAL_BREAKPOINT.to_bits() + 1)),
+                Just(-DEBUG_HORIZONTAL_BREAKPOINT),
+            ],
+            // Extremos finitos del tipo.
+            1 => prop_oneof![
+                Just(f32::MIN),
+                Just(f32::MAX),
+                Just(f32::MIN_POSITIVE),
+                Just(-f32::MIN_POSITIVE),
+            ],
+            // Valores no finitos.
+            2 => prop_oneof![
+                Just(f32::NAN),
+                Just(-f32::NAN),
+                Just(f32::INFINITY),
+                Just(f32::NEG_INFINITY),
+            ],
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// Feature: midway-baseline-audit-and-first-vertical, Property 4: La
+        /// decisión de layout del área Debug es total y la determina el
+        /// breakpoint.
+        ///
+        /// Para todo ancho disponible, incluidos cero, negativos y valores
+        /// no finitos, `debug_pane_layout` termina sin pánico y devuelve
+        /// `SideBySide` si y solo si el ancho es mayor o igual que
+        /// `DEBUG_HORIZONTAL_BREAKPOINT`.
+        ///
+        /// Comportamiento del baseline que esta propiedad fija de forma
+        /// explícita para `NaN`: `debug_pane_layout` decide con `>=`, y toda
+        /// comparación de orden con `NaN` es falsa, así que `NaN` cae en la
+        /// rama `else` y produce `Stacked`. No es un caso especial escrito
+        /// en la función: es la semántica de punto flotante de IEEE 754
+        /// heredada tal cual. Se documenta acá porque es exactamente el tipo
+        /// de comportamiento implícito que un refactor podría cambiar sin
+        /// darse cuenta.
+        #[test]
+        fn property_4_debug_pane_layout_is_total_and_decided_by_breakpoint(
+            available_width in arb_available_width(),
+        ) {
+            // Totalidad: la llamada retorna. El tipo de retorno no tiene
+            // variante de error ni de "sin decisión", así que obtener un
+            // valor ya es la evidencia de que la función es total para esta
+            // entrada; se fija además que ese valor es una de las dos
+            // variantes declaradas del baseline.
+            let layout = debug_pane_layout(available_width);
+            prop_assert!(
+                matches!(layout, DebugPaneLayout::SideBySide | DebugPaneLayout::Stacked),
+                "debug_pane_layout({available_width}) debe devolver una de las dos \
+                 variantes del baseline, y devolvió {layout:?}"
+            );
+
+            // "Si y solo si": la equivalencia se afirma en ambas
+            // direcciones comparando el booleano de la decisión con el
+            // booleano de la comparación.
+            let is_side_by_side = layout == DebugPaneLayout::SideBySide;
+            let at_or_above_breakpoint = available_width >= DEBUG_HORIZONTAL_BREAKPOINT;
+            prop_assert_eq!(
+                is_side_by_side,
+                at_or_above_breakpoint,
+                "debug_pane_layout({}) devolvió {:?}, pero available_width >= {} es {}",
+                available_width,
+                layout,
+                DEBUG_HORIZONTAL_BREAKPOINT,
+                at_or_above_breakpoint
+            );
+
+            // `NaN` no satisface `>=`, así que la rama `else` lo manda a
+            // `Stacked`. Se afirma aparte para que un cambio en esa
+            // semántica falle con un mensaje que nombre el caso.
+            if available_width.is_nan() {
+                prop_assert_eq!(
+                    layout,
+                    DebugPaneLayout::Stacked,
+                    "el baseline decide con `>=`, que es falso para NaN: NaN debe dar Stacked"
+                );
+            }
+
+            // La decisión no depende de nada más que del ancho: la misma
+            // entrada produce la misma salida.
+            prop_assert_eq!(
+                debug_pane_layout(available_width),
+                layout,
+                "debug_pane_layout debe ser determinista para el mismo ancho"
+            );
+        }
+    }
 
     #[test]
     fn wide_debug_area_uses_side_by_side_layout() {
@@ -5483,6 +7171,69 @@ mod debug_layout_tests {
             debug_pane_layout(DEBUG_HORIZONTAL_BREAKPOINT - 1.0),
             DebugPaneLayout::Stacked
         );
+    }
+
+    /// Tarea 4.5 (Requisito 6.4): ejemplos concretos de las clases de
+    /// entrada que la Property 4 cubre de forma general. Fijan el
+    /// comportamiento observado del baseline, incluida la decisión para
+    /// `NaN`, que sale de la semántica de `>=` y no de una rama explícita.
+    #[test]
+    fn degenerate_and_non_finite_widths_have_a_defined_layout() {
+        assert_eq!(debug_pane_layout(0.0), DebugPaneLayout::Stacked);
+        assert_eq!(debug_pane_layout(-0.0), DebugPaneLayout::Stacked);
+        assert_eq!(debug_pane_layout(-1.0), DebugPaneLayout::Stacked);
+        assert_eq!(debug_pane_layout(f32::MIN), DebugPaneLayout::Stacked);
+        assert_eq!(debug_pane_layout(f32::MAX), DebugPaneLayout::SideBySide);
+        assert_eq!(
+            debug_pane_layout(f32::INFINITY),
+            DebugPaneLayout::SideBySide
+        );
+        assert_eq!(
+            debug_pane_layout(f32::NEG_INFINITY),
+            DebugPaneLayout::Stacked
+        );
+        // `NaN >= x` es falso, así que el baseline cae en la rama `else`.
+        assert_eq!(debug_pane_layout(f32::NAN), DebugPaneLayout::Stacked);
+    }
+}
+
+/// Línea de progreso del Collection_Runner, en español (Req 9.6).
+///
+/// El baseline mostraba `format!("{progress:?}")`: el `Debug` derivado de
+/// `CollectionRunProgressEvent`, con nombres de campo en inglés y comillas de
+/// Rust. Esto lee los campos que interesan y arma una frase; no cambia el
+/// evento ni el flujo de progreso, solo su presentación.
+///
+/// Función aparte de la vista para poder fijarla en un test sin construir un
+/// `Midway` ni abrir una ventana.
+fn run_progress_label(progress: &CollectionRunProgressEvent) -> String {
+    let position = format!(
+        "{} de {}",
+        progress.processed_requests, progress.total_requests
+    );
+
+    match progress.phase {
+        CollectionRunPhase::Started => {
+            format!(
+                "Ejecución iniciada: {} request(s) por ejecutar.",
+                progress.total_requests
+            )
+        }
+        CollectionRunPhase::RequestStarted => match progress.request_name.as_deref() {
+            Some(name) => format!("Ejecutando \"{name}\" ({position})."),
+            None => format!("Ejecutando request ({position})."),
+        },
+        CollectionRunPhase::RequestFinished => match progress.request_name.as_deref() {
+            Some(name) => format!("Terminó \"{name}\" ({position})."),
+            None => format!("Terminó un request ({position})."),
+        },
+        CollectionRunPhase::Finished => format!(
+            "Ejecución finalizada: {} completado(s), {} con error, {} assertion(s) que pasaron y {} que fallaron.",
+            progress.completed_requests,
+            progress.errored_requests,
+            progress.passed_assertions,
+            progress.failed_assertions
+        ),
     }
 }
 
@@ -5506,7 +7257,12 @@ fn test_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message
         })
         .unwrap_or("(sin colección)");
 
-    let header = text(format!("Collection Runner — {collection_name}"))
+    // Req 9.6: el encabezado en español. `Run` sigue en inglés más abajo
+    // porque nombra el control que el Collection_Runner todavía no expone en
+    // la interfaz (L12, Hito 4): renombrarlo acá inventaría un nombre para un
+    // botón que no existe. La excepción está registrada en
+    // `docs/known-limitations.md`.
+    let header = text(format!("Ejecutor de la colección — {collection_name}"))
         .size(ds.typography.subtitle.size)
         .color(ds.palette.text_primary);
 
@@ -5518,13 +7274,13 @@ fn test_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message
                     report.items.len()
                 )
             } else if let Some(ref progress) = runner.latest_progress {
-                format!("{progress:?}")
+                run_progress_label(progress)
             } else {
                 "Ejecución en curso…".to_string()
             };
             text(progress_text).color(text_color).into()
         }
-        None => text("Sin ejecución en curso. Presiona Run para ejecutar la colección.")
+        None => text("Sin ejecución en curso. Presioná Run para ejecutar la colección.")
             .color(text_color)
             .into(),
     };
@@ -5538,6 +7294,116 @@ fn test_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message
     .height(Length::Fill)
     .padding(ds.spacing.md)
     .into()
+}
+
+#[cfg(test)]
+mod run_progress_label_tests {
+    //! Feature: midway-baseline-audit-and-first-vertical, Tarea 11.3
+    //! Requisito 9.6.
+    //!
+    //! Tests de ejemplo de [`run_progress_label`]: el baseline mostraba el
+    //! `Debug` derivado de `CollectionRunProgressEvent` en el modo Test, con
+    //! nombres de campo en inglés en texto visible. Lo que se fija acá es que
+    //! la línea que lo reemplaza está en español y no reexpone esos nombres.
+    //!
+    //! Headless: la función es una `String` a partir de un evento, sin
+    //! ventana, sin disco y sin red.
+
+    use super::*;
+
+    fn event(phase: CollectionRunPhase) -> CollectionRunProgressEvent {
+        CollectionRunProgressEvent {
+            run_id: "run-1".to_string(),
+            phase,
+            collection_id: "col-1".to_string(),
+            collection_name: "Colección".to_string(),
+            total_requests: 3,
+            processed_requests: 2,
+            current_index: 1,
+            completed_requests: 2,
+            errored_requests: 0,
+            passed_assertions: 4,
+            failed_assertions: 1,
+            request_id: Some("req-1".to_string()),
+            request_name: Some("Alta de usuario".to_string()),
+            environment_name: None,
+            resolved_url: None,
+            response_status: Some(201),
+            duration_ms: Some(42),
+            error_message: None,
+            started_at: "2024-01-01T00:00:00Z".to_string(),
+            finished_at: None,
+            emitted_at: "2024-01-01T00:00:01Z".to_string(),
+        }
+    }
+
+    /// Las cuatro fases producen una frase en español que nombra el request o
+    /// los contadores, sin filtrar los nombres de campo del `Debug` derivado.
+    #[test]
+    fn every_phase_has_a_spanish_label() {
+        const PHASES: [CollectionRunPhase; 4] = [
+            CollectionRunPhase::Started,
+            CollectionRunPhase::RequestStarted,
+            CollectionRunPhase::RequestFinished,
+            CollectionRunPhase::Finished,
+        ];
+        // Fragmentos del `Debug` derivado que el baseline dejaba a la vista.
+        const DEBUG_LEAKS: [&str; 4] = [
+            "CollectionRunProgressEvent",
+            "run_id",
+            "processed_requests",
+            "Some(",
+        ];
+
+        for phase in PHASES {
+            let label = run_progress_label(&event(phase));
+
+            assert!(
+                !label.trim().is_empty(),
+                "la fase {phase:?} quedó sin línea de progreso"
+            );
+            for leak in DEBUG_LEAKS {
+                assert!(
+                    !label.contains(leak),
+                    "la línea de la fase {phase:?} filtra el Debug derivado: {label:?}"
+                );
+            }
+        }
+    }
+
+    /// Las fases por request nombran el request en curso, que es la
+    /// información que el usuario necesita del progreso.
+    #[test]
+    fn per_request_phases_name_the_request_and_its_position() {
+        let started = run_progress_label(&event(CollectionRunPhase::RequestStarted));
+        assert_eq!(started, "Ejecutando \"Alta de usuario\" (2 de 3).");
+
+        let finished = run_progress_label(&event(CollectionRunPhase::RequestFinished));
+        assert_eq!(finished, "Terminó \"Alta de usuario\" (2 de 3).");
+    }
+
+    /// Sin nombre de request la frase sigue siendo legible: no se imprime
+    /// `None` ni un nombre vacío entre comillas.
+    #[test]
+    fn per_request_phases_degrade_without_a_request_name() {
+        let mut anonymous = event(CollectionRunPhase::RequestStarted);
+        anonymous.request_name = None;
+
+        let label = run_progress_label(&anonymous);
+
+        assert_eq!(label, "Ejecutando request (2 de 3).");
+    }
+
+    /// La fase final reporta los contadores consolidados.
+    #[test]
+    fn finished_phase_reports_the_counters() {
+        let label = run_progress_label(&event(CollectionRunPhase::Finished));
+
+        assert_eq!(
+            label,
+            "Ejecución finalizada: 2 completado(s), 0 con error, 4 assertion(s) que pasaron y 1 que fallaron."
+        );
+    }
 }
 
 /// Vista de nivel superior del rediseño Insomnia (Tarea 17.1).
@@ -5557,52 +7423,66 @@ fn test_content<'a>(state: &'a Midway, ds: &DesignSystem) -> Element<'a, Message
 /// - `RequestTab` + Test: Collection_Runner
 /// - `WorkspaceSection`: Workspace_Panel
 pub fn view(state: &Midway) -> Element<'_, Message> {
-    let ds = crate::ui::design_system::DesignSystem::for_mode(state.theme_mode);
+    let ds = state.theme.design_system();
 
-    // Activity_Bar: barra angosta de iconos a la izquierda (48px)
-    let activity_bar = container(guarded_view("ActivityBar", || {
-        crate::ui::activity_bar::view(state, &ds)
-    }))
-    .width(Length::Fixed(48.0))
-    .height(Length::Fill);
+    // Layout principal: tres columnas, altura completa.
+    //
+    // El cuerpo se arma dentro de un `responsive` porque el divisor horizontal
+    // del panel de respuesta necesita el alto de la ventana en coordenadas
+    // lógicas: el listener global de `CursorMoved` reporta la Y del cursor
+    // relativa a la ventana, así que el borde inferior del área Debug tiene que
+    // expresarse en esa misma referencia. El `responsive` de `debug_content`
+    // solo conoce el tamaño de su propia área. Este envoltorio mide una vez,
+    // arriba, y el valor baja por parámetro (Req 9.2). El `Size` no se usa para
+    // ninguna otra decisión de layout, así que el resto de la vista se comporta
+    // igual que antes.
+    let body = responsive(move |window_size| {
+        let mut body: iced::widget::Column<'_, Message> = column![];
 
-    // Request_Tree_Pane: árbol de folders/requests de la colección activa
-    let tree_pane_width = state.session.panel_sizes.workspace_panel_width;
-    let tree_pane = container(guarded_view("RequestTreePane", || {
-        crate::ui::request_tree_pane::view(state, &ds)
-    }))
-    .width(Length::Fixed(tree_pane_width))
-    .height(Length::Fill);
+        // Aviso de sesión descartada
+        if let Some(notice) = &state.session.startup_notice {
+            body = body.push(
+                container(text(notice.clone()).color(iced::Color::from_rgb(0.8, 0.5, 0.0)))
+                    .padding(ds.spacing.sm),
+            );
+        }
 
-    // Divider árbol/contenido: hitbox de 10 px y línea acentuada centrada.
-    let divider = vertical_resize_divider(
-        &ds,
-        PanelDragState::TreeMain,
-        state.panel_dragging == Some(PanelDragState::TreeMain),
-        state.panel_hovered == Some(PanelDragState::TreeMain),
-        TREE_DIVIDER_HIT_WIDTH,
-    );
+        // Activity_Bar: barra angosta de iconos a la izquierda (48px)
+        let activity_bar = container(guarded_view("ActivityBar", || {
+            crate::ui::activity_bar::view(state, &ds)
+        }))
+        .width(Length::Fixed(48.0))
+        .height(Length::Fill);
 
-    // Main content pane: Top_Bar encima + contenido ruteado por modo
-    let main = main_content_pane(state, ds);
+        // Request_Tree_Pane: árbol de folders/requests de la colección activa
+        let tree_pane = container(guarded_view("RequestTreePane", || {
+            crate::ui::request_tree_pane::view(state, &ds)
+        }))
+        .width(Length::Fixed(
+            state.session.panel_sizes.workspace_panel_width,
+        ))
+        .height(Length::Fill);
 
-    // Layout principal: tres columnas, altura completa
-    let mut body: iced::widget::Column<'_, Message> = column![];
-
-    // Aviso de sesión descartada
-    if let Some(notice) = &state.session.startup_notice {
-        body = body.push(
-            container(text(notice.clone()).color(iced::Color::from_rgb(0.8, 0.5, 0.0)))
-                .padding(ds.spacing.sm),
+        // Divider árbol/contenido: hitbox de 10 px y línea acentuada centrada.
+        let divider = vertical_resize_divider(
+            &ds,
+            PanelDragState::TreeMain,
+            state.panel_dragging == Some(PanelDragState::TreeMain),
+            state.panel_hovered == Some(PanelDragState::TreeMain),
+            TREE_DIVIDER_HIT_WIDTH,
         );
-    }
 
-    body = body.push(
-        row![activity_bar, tree_pane, divider, main]
-            .spacing(0)
-            .width(Length::Fill)
-            .height(Length::Fill),
-    );
+        // Main content pane: Top_Bar encima + contenido ruteado por modo
+        let main = main_content_pane(state, ds, window_size.height);
+
+        body.push(
+            row![activity_bar, tree_pane, divider, main]
+                .spacing(0)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .into()
+    });
 
     let background = ds.palette.background_primary;
     let content: Element<'_, Message> = container(body)
@@ -5647,7 +7527,11 @@ pub fn view(state: &Midway) -> Element<'_, Message> {
 /// progreso del Collection_Runner está implementada; autosave y teclado
 /// global se agregan en la Fase 5.
 pub fn subscription(state: &Midway) -> Subscription<Message> {
-    let runner_subscription = match state.runner.as_ref().and_then(|runner| runner.running.clone()) {
+    let runner_subscription = match state
+        .runner
+        .as_ref()
+        .and_then(|runner| runner.running.clone())
+    {
         Some(handle) => Subscription::run_with(handle, collection_runner_progress_stream),
         None => Subscription::none(),
     };
@@ -5657,8 +7541,8 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     // exigido entre una modificación y su persistencia, cubriendo el peor
     // caso (una modificación ocurre justo después de un tick) sin
     // acercarse al límite.
-    let autosave_subscription =
-        iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Session(SessionMessage::AutosaveTick));
+    let autosave_subscription = iced::time::every(std::time::Duration::from_secs(1))
+        .map(|_| Message::Session(SessionMessage::AutosaveTick));
 
     // Shortcut Ctrl/Cmd+K para abrir/cerrar el Command Palette (Tarea 11.2,
     // Requisito 6.1). `Modifiers::COMMAND` es Ctrl en Windows/Linux y Cmd
@@ -5669,12 +7553,16 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     // de la tabla de shortcuts globales, que la Tarea 11.12 agrega por
     // separado sin tener que tocar este filtro.
     let palette_shortcut_subscription = iced::keyboard::listen().filter_map(|event| match event {
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => match key.as_ref() {
-            iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("k") => {
-                Some(Message::Palette(PaletteMessage::Toggled))
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("k") =>
+                {
+                    Some(Message::Palette(PaletteMessage::Toggled))
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         _ => None,
     });
 
@@ -5705,52 +7593,76 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     // resuelve contra el estado vigente en el momento en que el mensaje
     // llega a `update`, en vez de en la subscription.
     let global_shortcut_subscription = iced::keyboard::listen().filter_map(|event| match event {
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() && modifiers.shift() => {
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. }
+            if modifiers.command() && modifiers.shift() =>
+        {
             match key.as_ref() {
-                iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("n") => {
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("n") =>
+                {
                     Some(Message::Keyboard(KeyboardMessage::NewBlankTabRequested))
                 }
-                iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("p") => {
-                    Some(Message::RequestComposer(RequestComposerMessage::SettingsPressed))
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("p") =>
+                {
+                    Some(Message::RequestComposer(
+                        RequestComposerMessage::SettingsPressed,
+                    ))
                 }
-                iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("t") => {
-                    Some(Message::RequestComposer(RequestComposerMessage::ClosedTabReopened))
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("t") =>
+                {
+                    Some(Message::RequestComposer(
+                        RequestComposerMessage::ClosedTabReopened,
+                    ))
                 }
                 _ => None,
             }
         }
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => match key.as_ref() {
-            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => {
-                Some(Message::RequestComposer(RequestComposerMessage::SendPressed))
-            }
-            iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("s") => {
-                Some(Message::Keyboard(KeyboardMessage::SaveRequested))
-            }
-            iced::keyboard::Key::Character(character) if character.eq_ignore_ascii_case("w") => {
-                Some(Message::Keyboard(KeyboardMessage::CloseActiveTabShortcut))
-            }
-            iced::keyboard::Key::Character(character) if character == "." => {
-                Some(Message::Workspace(WorkspaceMessage::ToggleCollapsed))
-            }
-            _ => None,
-        },
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.alt() => match key.as_ref() {
-            iced::keyboard::Key::Character(character) => {
-                let digit = character.parse::<usize>().ok()?;
-                if (1..=9).contains(&digit) {
-                    Some(Message::Keyboard(KeyboardMessage::GoToTabShortcut { index: digit - 1 }))
-                } else {
-                    None
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.command() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) => Some(
+                    Message::RequestComposer(RequestComposerMessage::SendPressed),
+                ),
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("s") =>
+                {
+                    Some(Message::Keyboard(KeyboardMessage::SaveRequested))
                 }
+                iced::keyboard::Key::Character(character)
+                    if character.eq_ignore_ascii_case("w") =>
+                {
+                    Some(Message::Keyboard(KeyboardMessage::CloseActiveTabShortcut))
+                }
+                iced::keyboard::Key::Character(".") => {
+                    Some(Message::Workspace(WorkspaceMessage::ToggleCollapsed))
+                }
+                _ => None,
             }
-            _ => None,
-        },
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.is_empty() => match key.as_ref() {
-            iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
-                Some(Message::Keyboard(KeyboardMessage::EscapePressed))
+        }
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.alt() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Character(character) => {
+                    let digit = character.parse::<usize>().ok()?;
+                    if (1..=9).contains(&digit) {
+                        Some(Message::Keyboard(KeyboardMessage::GoToTabShortcut {
+                            index: digit - 1,
+                        }))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } if modifiers.is_empty() => {
+            match key.as_ref() {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
+                    Some(Message::Keyboard(KeyboardMessage::EscapePressed))
+                }
+                _ => None,
+            }
+        }
         _ => None,
     });
 
@@ -5762,17 +7674,15 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
     });
     // El handle del request puede soltarse fuera de su fila o del árbol;
     // escuchamos la liberación global para completar/cancelar el drop.
-    let request_drop_subscription = iced::event::listen_with(|event, _status, _id| {
-        match event {
-            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
-                iced::mouse::Button::Left,
-            )) => Some(Message::Tree(TreeMessage::RequestDragReleased)),
-            iced::Event::Mouse(iced::mouse::Event::CursorLeft)
-            | iced::Event::Window(iced::window::Event::Unfocused) => {
-                Some(Message::Tree(TreeMessage::RequestDragCancelled))
-            }
-            _ => None,
+    let request_drop_subscription = iced::event::listen_with(|event, _status, _id| match event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+            Some(Message::Tree(TreeMessage::RequestDragReleased))
         }
+        iced::Event::Mouse(iced::mouse::Event::CursorLeft)
+        | iced::Event::Window(iced::window::Event::Unfocused) => {
+            Some(Message::Tree(TreeMessage::RequestDragCancelled))
+        }
+        _ => None,
     });
 
     Subscription::batch([
@@ -5788,7 +7698,10 @@ pub fn subscription(state: &Midway) -> Subscription<Message> {
 fn panel_resize_message_for_event(event: &iced::Event) -> Option<PanelResizeMessage> {
     match event {
         iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-            Some(PanelResizeMessage::DividerDragged(position.x))
+            Some(PanelResizeMessage::DividerDragged {
+                x: position.x,
+                y: position.y,
+            })
         }
         iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left))
         | iced::Event::Mouse(iced::mouse::Event::CursorLeft)
@@ -5807,7 +7720,9 @@ fn panel_resize_message_for_event(event: &iced::Event) -> Option<PanelResizeMess
 /// el mismo `handle` (mismo hash para `Subscription::run_with`, ver
 /// `ProgressReceiverHandle`); en ese caso se devuelve un stream vacío para
 /// no reconstruir un consumidor duplicado del mismo canal.
-fn collection_runner_progress_stream(handle: &ProgressReceiverHandle) -> BoxStream<'static, Message> {
+fn collection_runner_progress_stream(
+    handle: &ProgressReceiverHandle,
+) -> BoxStream<'static, Message> {
     match handle.take() {
         Some(receiver) => receiver
             .map(|event| Message::Runner(RunnerMessage::ProgressReceived(event)))
@@ -5906,7 +7821,7 @@ mod tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
-            theme_mode: ThemeMode::default(),
+            theme: ThemeSettingsState::default(),
             main_content_focus: MainContentFocus::default(),
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
@@ -6275,7 +8190,7 @@ mod tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
-            theme_mode: ThemeMode::default(),
+            theme: ThemeSettingsState::default(),
             main_content_focus: MainContentFocus::default(),
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
@@ -6617,7 +8532,9 @@ mod tests {
     fn empty_auth_config_for(kind: AuthKind) -> AuthConfig {
         match kind {
             AuthKind::None => AuthConfig::None,
-            AuthKind::Bearer => AuthConfig::Bearer { token: String::new() },
+            AuthKind::Bearer => AuthConfig::Bearer {
+                token: String::new(),
+            },
             AuthKind::Basic => AuthConfig::Basic {
                 username: String::new(),
                 password: String::new(),
@@ -6785,21 +8702,21 @@ mod tests {
     }
 
     /// Edita el `key` de la fila con el `id` dado, si existe.
-    fn ref_set_key(rows: &mut Vec<RefRow>, id: &str, key: String) {
+    fn ref_set_key(rows: &mut [RefRow], id: &str, key: String) {
         if let Some(row) = rows.iter_mut().find(|row| row.0 == id) {
             row.1 = key;
         }
     }
 
     /// Edita el `value` de la fila con el `id` dado, si existe.
-    fn ref_set_value(rows: &mut Vec<RefRow>, id: &str, value: String) {
+    fn ref_set_value(rows: &mut [RefRow], id: &str, value: String) {
         if let Some(row) = rows.iter_mut().find(|row| row.0 == id) {
             row.2 = value;
         }
     }
 
     /// Alterna el `enabled` de la fila con el `id` dado, si existe.
-    fn ref_toggle_enabled(rows: &mut Vec<RefRow>, id: &str) {
+    fn ref_toggle_enabled(rows: &mut [RefRow], id: &str) {
         if let Some(row) = rows.iter_mut().find(|row| row.0 == id) {
             row.3 = !row.3;
         }
@@ -7066,7 +8983,10 @@ mod tests {
     #[test]
     fn eviction_preserves_response_metadata_and_original_size() {
         let body = "x".repeat(4096);
-        let mut tabs = vec![tab_with_response_body(&body), tab_with_response_body("otro")];
+        let mut tabs = vec![
+            tab_with_response_body(&body),
+            tab_with_response_body("otro"),
+        ];
 
         evict_inactive_response_bodies(&mut tabs, 1);
 
@@ -7187,7 +9107,7 @@ mod tests {
         assert_eq!(assertion.expected, "200");
 
         let response = build_test_response(200, vec![], "", "https://example.com");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -7226,7 +9146,7 @@ mod tests {
             "",
             "https://example.com",
         );
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -7258,7 +9178,7 @@ mod tests {
         assert_eq!(assertion.expected, "hello");
 
         let response = build_test_response(200, vec![], "hello world", "https://example.com");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -7290,7 +9210,7 @@ mod tests {
         assert_eq!(assertion.expected, "Ana");
 
         let response = build_test_response(200, vec![], r#"{"name":"Ana"}"#, "https://example.com");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -7323,7 +9243,7 @@ mod tests {
         assert_eq!(assertion.expected, "localhost");
 
         let response = build_test_response(200, vec![], "", "http://localhost:8080/api");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 0);
@@ -7372,7 +9292,7 @@ mod tests {
             "",
             "https://example.com",
         );
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 0);
@@ -8062,16 +9982,18 @@ mod tests {
             proptest::bool::ANY,
             prop::collection::hash_set(2usize..=12usize, 0..=6),
         )
-            .prop_map(|(candidate, unrelated_names, candidate_present, used_suffixes)| {
-                let mut existing_names = unrelated_names;
-                if candidate_present {
-                    existing_names.insert(candidate.clone());
-                }
-                for suffix in used_suffixes {
-                    existing_names.insert(format!("{candidate} ({suffix})"));
-                }
-                (existing_names, candidate)
-            })
+            .prop_map(
+                |(candidate, unrelated_names, candidate_present, used_suffixes)| {
+                    let mut existing_names = unrelated_names;
+                    if candidate_present {
+                        existing_names.insert(candidate.clone());
+                    }
+                    for suffix in used_suffixes {
+                        existing_names.insert(format!("{candidate} ({suffix})"));
+                    }
+                    (existing_names, candidate)
+                },
+            )
     }
 
     proptest! {
@@ -8236,9 +10158,12 @@ mod tests {
     /// que contiene un único `SavedRequestRecord`, usado por los tests de
     /// `build_palette_items`/`execute_palette_item` que necesitan un
     /// request guardado navegable desde el palette.
-    fn workspace_snapshot_with_one_saved_request() -> (midway_core::domain::workspace::WorkspaceSnapshot, String) {
+    fn workspace_snapshot_with_one_saved_request(
+    ) -> (midway_core::domain::workspace::WorkspaceSnapshot, String) {
         use midway_core::domain::http::RequestBodyDraft;
-        use midway_core::domain::workspace::{CollectionSummary, CollectionWithRequests, SavedRequestRecord};
+        use midway_core::domain::workspace::{
+            CollectionSummary, CollectionWithRequests, SavedRequestRecord,
+        };
 
         let request_id = "request-1".to_string();
         let draft = RequestDraft {
@@ -8249,7 +10174,11 @@ mod tests {
             query: Vec::new(),
             headers: Vec::new(),
             auth: AuthConfig::None,
-            body: RequestBodyDraft { mode: BodyMode::None, value: String::new(), form_data: Vec::new() },
+            body: RequestBodyDraft {
+                mode: BodyMode::None,
+                value: String::new(),
+                form_data: Vec::new(),
+            },
             timeout_ms: 30_000,
             environment_id: None,
             response_tests: Vec::new(),
@@ -8319,13 +10248,18 @@ mod tests {
         let mut midway = build_test_midway(create_blank_draft());
         midway.palette.is_open = true;
 
-        let _ = update_palette(&mut midway, PaletteMessage::QueryChanged("nuevo".to_string()));
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::QueryChanged("nuevo".to_string()),
+        );
         assert_eq!(midway.palette.query, "nuevo");
 
         let items = build_palette_items(&midway);
         let results = command_palette::search_palette_items(&items, &midway.palette.query, 14);
         assert!(
-            results.iter().any(|item| item.id == PALETTE_ACTION_NEW_REQUEST),
+            results
+                .iter()
+                .any(|item| item.id == PALETTE_ACTION_NEW_REQUEST),
             "la acción fija 'Nuevo request' debe calzar con la query 'nuevo'"
         );
     }
@@ -8340,8 +10274,12 @@ mod tests {
         midway.palette.query = "nuevo".to_string();
         let tabs_before = midway.tabs.len();
 
-        let _ =
-            update_palette(&mut midway, PaletteMessage::ItemSelected { item_id: PALETTE_ACTION_NEW_REQUEST.to_string() });
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::ItemSelected {
+                item_id: PALETTE_ACTION_NEW_REQUEST.to_string(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), tabs_before + 1);
         assert_eq!(midway.active_tab, Some(midway.tabs.len() - 1));
@@ -8359,15 +10297,28 @@ mod tests {
         midway.workspace = snapshot;
         midway.palette.is_open = true;
 
-        let _ = update_palette(&mut midway, PaletteMessage::ItemSelected { item_id: format!("request:{request_id}") });
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::ItemSelected {
+                item_id: format!("request:{request_id}"),
+            },
+        );
 
         assert!(!midway.palette.is_open);
         assert!(midway.palette.query.is_empty());
 
-        let active_index = midway.active_tab.expect("debe haber una tab activa tras abrir el request");
+        let active_index = midway
+            .active_tab
+            .expect("debe haber una tab activa tras abrir el request");
         let active_tab = &midway.tabs[active_index];
         assert_eq!(active_tab.draft.url, "https://api.ejemplo.com/users/1");
-        assert_eq!(active_tab.saved_draft.as_ref().and_then(|draft| draft.id.clone()), Some(request_id));
+        assert_eq!(
+            active_tab
+                .saved_draft
+                .as_ref()
+                .and_then(|draft| draft.id.clone()),
+            Some(request_id)
+        );
     }
 
     /// Reabrir el mismo request guardado dos veces reutiliza la tab ya
@@ -8388,10 +10339,17 @@ mod tests {
 
         open_saved_request_in_tab(&mut midway, &request_id);
 
-        assert_eq!(midway.tabs.len(), tabs_after_first_open + 1, "no debe crear una segunda tab para el mismo request");
+        assert_eq!(
+            midway.tabs.len(),
+            tabs_after_first_open + 1,
+            "no debe crear una segunda tab para el mismo request"
+        );
         let active_index = midway.active_tab.expect("debe haber una tab activa");
         assert_eq!(
-            midway.tabs[active_index].saved_draft.as_ref().and_then(|draft| draft.id.clone()),
+            midway.tabs[active_index]
+                .saved_draft
+                .as_ref()
+                .and_then(|draft| draft.id.clone()),
             Some(request_id)
         );
     }
@@ -8423,7 +10381,12 @@ mod tests {
         let tabs_before = midway.tabs.len();
         let active_tab_before = midway.active_tab;
 
-        let _ = update_palette(&mut midway, PaletteMessage::ItemSelected { item_id: "request:no-existe".to_string() });
+        let _ = update_palette(
+            &mut midway,
+            PaletteMessage::ItemSelected {
+                item_id: "request:no-existe".to_string(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), tabs_before);
         assert_eq!(midway.active_tab, active_tab_before);
@@ -8459,13 +10422,21 @@ mod tests {
         midway.tabs.push(RequestTabState::blank());
         midway.active_tab = Some(1);
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: closed_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: closed_id.clone(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), 1, "la tab cerrada debe salir de `tabs`");
         assert!(!midway.tabs.iter().any(|tab| tab.id == closed_id));
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, closed_id);
-        assert!(midway.session.dirty, "cerrar una tab debe marcar la sesión como dirty");
+        assert!(
+            midway.session.dirty,
+            "cerrar una tab debe marcar la sesión como dirty"
+        );
     }
 
     /// Cerrar más de `CLOSED_TABS_LIMIT` (20) tabs mantiene el stack
@@ -8487,7 +10458,8 @@ mod tests {
             let tab_id = midway.tabs[0].id.clone();
             closed_ids_in_order.push(tab_id.clone());
             midway.active_tab = Some(0);
-            let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id });
+            let _ =
+                update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id });
         }
 
         assert_eq!(midway.closed_tabs.len(), crate::session::CLOSED_TABS_LIMIT);
@@ -8497,14 +10469,24 @@ mod tests {
         // deben haber sido descartados, ya que se cerraron 25 tabs con un
         // límite de 20).
         let most_recently_closed = closed_ids_in_order.last().unwrap();
-        assert_eq!(&midway.closed_tabs.front().unwrap().id, most_recently_closed);
+        assert_eq!(
+            &midway.closed_tabs.front().unwrap().id,
+            most_recently_closed
+        );
 
-        let expected_oldest_surviving = &closed_ids_in_order[closed_ids_in_order.len() - crate::session::CLOSED_TABS_LIMIT];
-        assert_eq!(&midway.closed_tabs.back().unwrap().id, expected_oldest_surviving);
+        let expected_oldest_surviving =
+            &closed_ids_in_order[closed_ids_in_order.len() - crate::session::CLOSED_TABS_LIMIT];
+        assert_eq!(
+            &midway.closed_tabs.back().unwrap().id,
+            expected_oldest_surviving
+        );
 
         for discarded_id in &closed_ids_in_order[..5] {
             assert!(
-                !midway.closed_tabs.iter().any(|snapshot| &snapshot.id == discarded_id),
+                !midway
+                    .closed_tabs
+                    .iter()
+                    .any(|snapshot| &snapshot.id == discarded_id),
                 "los primeros cierres deben haber sido descartados del stack acotado"
             );
         }
@@ -8520,7 +10502,9 @@ mod tests {
         midway.active_tab = Some(1);
         let _ = update_request_composer(
             &mut midway,
-            RequestComposerMessage::TabClosed { tab_id: tab_id_to_close.clone() },
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id_to_close.clone(),
+            },
         );
         let tabs_before_reopen = midway.tabs.len();
 
@@ -8528,7 +10512,9 @@ mod tests {
 
         assert_eq!(midway.tabs.len(), tabs_before_reopen + 1);
         assert!(midway.closed_tabs.is_empty());
-        let active_index = midway.active_tab.expect("debe haber una tab activa tras reabrir");
+        let active_index = midway
+            .active_tab
+            .expect("debe haber una tab activa tras reabrir");
         assert_eq!(active_index, midway.tabs.len() - 1);
         assert_eq!(midway.tabs[active_index].id, tab_id_to_close);
     }
@@ -8560,21 +10546,44 @@ mod tests {
         let tab_b_id = midway.tabs[1].id.clone();
 
         midway.active_tab = Some(0);
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_a_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_a_id.clone(),
+            },
+        );
         // Tras cerrar A, la única tab restante (B) queda activa en el
         // índice 0.
         midway.active_tab = Some(0);
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_b_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_b_id.clone(),
+            },
+        );
 
         assert_eq!(midway.closed_tabs.len(), 2);
-        assert_eq!(midway.closed_tabs.front().unwrap().id, tab_b_id, "B se cerró más recientemente que A");
+        assert_eq!(
+            midway.closed_tabs.front().unwrap().id,
+            tab_b_id,
+            "B se cerró más recientemente que A"
+        );
 
         let _ = update_request_composer(&mut midway, RequestComposerMessage::ClosedTabReopened);
 
-        let active_index = midway.active_tab.expect("debe haber una tab activa tras reabrir");
-        assert_eq!(midway.tabs[active_index].id, tab_b_id, "reabrir debe traer B, no A");
+        let active_index = midway
+            .active_tab
+            .expect("debe haber una tab activa tras reabrir");
+        assert_eq!(
+            midway.tabs[active_index].id, tab_b_id,
+            "reabrir debe traer B, no A"
+        );
         assert_eq!(midway.closed_tabs.len(), 1);
-        assert_eq!(midway.closed_tabs.front().unwrap().id, tab_a_id, "A sigue en el stack");
+        assert_eq!(
+            midway.closed_tabs.front().unwrap().id,
+            tab_a_id,
+            "A sigue en el stack"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -8744,11 +10753,26 @@ mod tests {
         let mut midway = build_test_midway(draft);
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
-        assert_eq!(midway.tabs.len(), 1, "la tab dirty no debe cerrarse todavía");
-        assert!(midway.closed_tabs.is_empty(), "no debe empujarse al stack de tabs cerradas todavía");
-        let prompt = midway.unsaved_changes_prompt.as_ref().expect("debe mostrarse el aviso de unsaved changes");
+        assert_eq!(
+            midway.tabs.len(),
+            1,
+            "la tab dirty no debe cerrarse todavía"
+        );
+        assert!(
+            midway.closed_tabs.is_empty(),
+            "no debe empujarse al stack de tabs cerradas todavía"
+        );
+        let prompt = midway
+            .unsaved_changes_prompt
+            .as_ref()
+            .expect("debe mostrarse el aviso de unsaved changes");
         assert_eq!(prompt.tab_id, tab_id);
         assert!(!prompt.saving);
         assert!(prompt.error.is_none());
@@ -8763,12 +10787,23 @@ mod tests {
         let mut midway = build_test_midway(create_blank_draft());
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
-        assert!(midway.tabs.is_empty(), "la tab limpia debe cerrarse de inmediato");
+        assert!(
+            midway.tabs.is_empty(),
+            "la tab limpia debe cerrarse de inmediato"
+        );
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, tab_id);
-        assert!(midway.unsaved_changes_prompt.is_none(), "no debe mostrarse ningún aviso para una tab limpia");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "no debe mostrarse ningún aviso para una tab limpia"
+        );
     }
 
     /// Una tab con `saved_draft: Some(...)` cuyo draft actual es
@@ -8782,7 +10817,12 @@ mod tests {
         midway.tabs[0].saved_draft = Some(saved);
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
         assert!(midway.tabs.is_empty());
         assert!(midway.unsaved_changes_prompt.is_none());
@@ -8800,7 +10840,12 @@ mod tests {
         midway.tabs[0].draft.url = "https://example.com/edited-after-save".to_string();
         let tab_id = midway.tabs[0].id.clone();
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
 
         assert_eq!(midway.tabs.len(), 1);
         assert!(midway.unsaved_changes_prompt.is_some());
@@ -8814,16 +10859,36 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft.clone());
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        assert!(midway.unsaved_changes_prompt.is_some(), "precondición: el aviso debe estar abierto");
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        assert!(
+            midway.unsaved_changes_prompt.is_some(),
+            "precondición: el aviso debe estar abierto"
+        );
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::UnsavedChangesCancelRequested);
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::UnsavedChangesCancelRequested,
+        );
 
-        assert!(midway.unsaved_changes_prompt.is_none(), "Cancelar debe descartar el aviso");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "Cancelar debe descartar el aviso"
+        );
         assert_eq!(midway.tabs.len(), 1, "Cancelar no debe cerrar la tab");
         assert_eq!(midway.tabs[0].id, tab_id);
-        assert_eq!(midway.tabs[0].draft, draft, "Cancelar no debe mutar el draft");
-        assert!(midway.tabs[0].saved_draft.is_none(), "Cancelar no debe mutar saved_draft");
+        assert_eq!(
+            midway.tabs[0].draft, draft,
+            "Cancelar no debe mutar el draft"
+        );
+        assert!(
+            midway.tabs[0].saved_draft.is_none(),
+            "Cancelar no debe mutar saved_draft"
+        );
     }
 
     /// "Descartar" cierra la tab de inmediato (misma lógica que
@@ -8837,12 +10902,26 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft);
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        assert!(midway.unsaved_changes_prompt.is_some(), "precondición: el aviso debe estar abierto");
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        assert!(
+            midway.unsaved_changes_prompt.is_some(),
+            "precondición: el aviso debe estar abierto"
+        );
 
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::UnsavedChangesDiscardRequested);
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::UnsavedChangesDiscardRequested,
+        );
 
-        assert!(midway.unsaved_changes_prompt.is_none(), "Descartar debe cerrar el aviso");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "Descartar debe cerrar el aviso"
+        );
         assert!(midway.tabs.is_empty(), "Descartar debe cerrar la tab");
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, tab_id);
@@ -8866,8 +10945,16 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft);
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        assert!(midway.unsaved_changes_prompt.is_some(), "precondición: el aviso debe estar abierto");
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        assert!(
+            midway.unsaved_changes_prompt.is_some(),
+            "precondición: el aviso debe estar abierto"
+        );
 
         let mut persisted_draft = midway.tabs[0].draft.clone();
         persisted_draft.id = Some("assigned-by-save-request".to_string());
@@ -8880,7 +10967,10 @@ mod tests {
             })),
         );
 
-        assert!(midway.unsaved_changes_prompt.is_none(), "Guardar exitoso debe descartar el aviso");
+        assert!(
+            midway.unsaved_changes_prompt.is_none(),
+            "Guardar exitoso debe descartar el aviso"
+        );
         assert!(midway.tabs.is_empty(), "Guardar exitoso debe cerrar la tab");
         assert_eq!(midway.closed_tabs.len(), 1);
         assert_eq!(midway.closed_tabs.front().unwrap().id, tab_id);
@@ -8895,21 +10985,47 @@ mod tests {
         draft.url = "https://example.com/unsaved".to_string();
         let mut midway = build_test_midway(draft.clone());
         let tab_id = midway.tabs[0].id.clone();
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::TabClosed { tab_id: tab_id.clone() });
-        let _ = update_request_composer(&mut midway, RequestComposerMessage::UnsavedChangesSaveRequested);
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::TabClosed {
+                tab_id: tab_id.clone(),
+            },
+        );
+        let _ = update_request_composer(
+            &mut midway,
+            RequestComposerMessage::UnsavedChangesSaveRequested,
+        );
 
         let _ = update_request_composer(
             &mut midway,
-            RequestComposerMessage::UnsavedChangesSaveCompleted(Err("fallo simulado de guardado".to_string())),
+            RequestComposerMessage::UnsavedChangesSaveCompleted(Err(
+                "fallo simulado de guardado".to_string()
+            )),
         );
 
-        assert_eq!(midway.tabs.len(), 1, "un error de Guardar no debe cerrar la tab");
-        assert_eq!(midway.tabs[0].draft, draft, "un error de Guardar no debe mutar el draft");
-        assert!(midway.tabs[0].saved_draft.is_none(), "un error de Guardar no debe mutar saved_draft");
-        let prompt = midway.unsaved_changes_prompt.as_ref().expect("el aviso debe permanecer abierto tras un error");
+        assert_eq!(
+            midway.tabs.len(),
+            1,
+            "un error de Guardar no debe cerrar la tab"
+        );
+        assert_eq!(
+            midway.tabs[0].draft, draft,
+            "un error de Guardar no debe mutar el draft"
+        );
+        assert!(
+            midway.tabs[0].saved_draft.is_none(),
+            "un error de Guardar no debe mutar saved_draft"
+        );
+        let prompt = midway
+            .unsaved_changes_prompt
+            .as_ref()
+            .expect("el aviso debe permanecer abierto tras un error");
         assert_eq!(prompt.tab_id, tab_id);
         assert!(!prompt.saving, "saving debe volver a false tras el error");
-        assert!(prompt.error.is_some(), "debe quedar visible el mensaje de error");
+        assert!(
+            prompt.error.is_some(),
+            "debe quedar visible el mensaje de error"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -9116,7 +11232,10 @@ mod tests {
 
         let _ = update_request_composer(&mut midway, RequestComposerMessage::SendPressed);
 
-        assert!(midway.tabs[0].sending, "Ctrl+Enter debe disparar el envío de la tab activa");
+        assert!(
+            midway.tabs[0].sending,
+            "Ctrl+Enter debe disparar el envío de la tab activa"
+        );
         assert!(midway.tabs[0].execution_id.is_some());
     }
 
@@ -9135,7 +11254,10 @@ mod tests {
 
         let _ = update_request_composer(&mut midway, RequestComposerMessage::SettingsPressed);
 
-        assert!(midway.tabs[0].preview.is_none(), "Ctrl+Shift+P debe cerrar el preview ya abierto");
+        assert!(
+            midway.tabs[0].preview.is_none(),
+            "Ctrl+Shift+P debe cerrar el preview ya abierto"
+        );
     }
 
     /// Ctrl+. ("Tools/Workspace"): despacha
@@ -9147,10 +11269,16 @@ mod tests {
         assert!(!midway.workspace_panel.collapsed);
 
         let _ = update_workspace(&mut midway, WorkspaceMessage::ToggleCollapsed);
-        assert!(midway.workspace_panel.collapsed, "Ctrl+. debe colapsar el panel cuando estaba expandido");
+        assert!(
+            midway.workspace_panel.collapsed,
+            "Ctrl+. debe colapsar el panel cuando estaba expandido"
+        );
 
         let _ = update_workspace(&mut midway, WorkspaceMessage::ToggleCollapsed);
-        assert!(!midway.workspace_panel.collapsed, "una segunda pulsación debe expandirlo de nuevo");
+        assert!(
+            !midway.workspace_panel.collapsed,
+            "una segunda pulsación debe expandirlo de nuevo"
+        );
     }
 
     /// Ctrl+S abre el mismo diálogo de guardado que el botón del composer.
@@ -9333,7 +11461,10 @@ mod tests {
 
         assert_eq!(midway.tabs.len(), tabs_before + 1);
         assert_eq!(midway.active_tab, Some(midway.tabs.len() - 1));
-        assert!(midway.session.dirty, "abrir una tab nueva debe marcar la sesión como dirty");
+        assert!(
+            midway.session.dirty,
+            "abrir una tab nueva debe marcar la sesión como dirty"
+        );
     }
 
     /// Ctrl+W ("Cerrar tab activa"): cierra la tab activa (identificada en
@@ -9423,9 +11554,15 @@ mod tests {
 
         let _ = update_keyboard(&mut midway, KeyboardMessage::EscapePressed);
 
-        assert!(!midway.palette.is_open, "Esc debe cerrar el palette primero");
+        assert!(
+            !midway.palette.is_open,
+            "Esc debe cerrar el palette primero"
+        );
         assert!(midway.palette.query.is_empty());
-        assert!(midway.tabs[0].preview.is_some(), "el preview no debe cerrarse en esta pulsación de Esc");
+        assert!(
+            midway.tabs[0].preview.is_some(),
+            "el preview no debe cerrarse en esta pulsación de Esc"
+        );
     }
 
     /// Esc con el palette cerrado pero el preview de la tab activa
@@ -9439,7 +11576,10 @@ mod tests {
 
         let _ = update_keyboard(&mut midway, KeyboardMessage::EscapePressed);
 
-        assert!(midway.tabs[0].preview.is_none(), "Esc debe cerrar el preview cuando el palette está cerrado");
+        assert!(
+            midway.tabs[0].preview.is_none(),
+            "Esc debe cerrar el preview cuando el palette está cerrado"
+        );
     }
 
     /// Esc sin ningún overlay abierto (ni palette ni preview) es un
@@ -9868,11 +12008,8 @@ mod tests {
             parent_folder_id: None,
             name: "Conservar".to_string(),
         };
-        let deleted_request = crud_saved_request(
-            "request-deleted",
-            "collection-a",
-            Some("folder-deleted"),
-        );
+        let deleted_request =
+            crud_saved_request("request-deleted", "collection-a", Some("folder-deleted"));
         let surviving_request = crud_saved_request("request-keep", "collection-a", None);
 
         let mut state = build_test_midway(create_blank_draft());
@@ -9903,10 +12040,10 @@ mod tests {
             saving: false,
             error: None,
         });
-        state.tree.collapsed.extend([
-            "folder-deleted".to_string(),
-            "folder-keep".to_string(),
-        ]);
+        state
+            .tree
+            .collapsed
+            .extend(["folder-deleted".to_string(), "folder-keep".to_string()]);
         state.tree.collapsed_snapshot = Some(state.tree.collapsed.clone());
         state.workspace_crud_dialog = Some(WorkspaceCrudDialogState {
             kind: WorkspaceCrudKind::DeleteFolder {
@@ -9930,16 +12067,21 @@ mod tests {
         };
         reconcile_workspace_after_crud(&mut state, new_workspace);
 
-        assert!(state.tabs.iter().all(|tab| {
-            tab.draft.id.as_deref() != Some("request-deleted")
-        }));
-        assert!(state.closed_tabs.iter().all(|tab| {
-            tab.draft.id.as_deref() != Some("request-deleted")
-        }));
+        assert!(state
+            .tabs
+            .iter()
+            .all(|tab| { tab.draft.id.as_deref() != Some("request-deleted") }));
+        assert!(state
+            .closed_tabs
+            .iter()
+            .all(|tab| { tab.draft.id.as_deref() != Some("request-deleted") }));
         assert!(state.save_request_prompt.is_none());
         assert!(state.unsaved_changes_prompt.is_none());
         assert_eq!(state.active_collection_id.as_deref(), Some("collection-a"));
-        assert_eq!(state.tree.collapsed, HashSet::from(["folder-keep".to_string()]));
+        assert_eq!(
+            state.tree.collapsed,
+            HashSet::from(["folder-keep".to_string()])
+        );
         assert_eq!(
             state.tree.collapsed_snapshot,
             Some(HashSet::from(["folder-keep".to_string()]))
@@ -9997,8 +12139,8 @@ mod error_boundary_tests {
     //! tocar el data dir real como interferencia entre tests (el override
     //! es por hilo, y cada `#[test]` de Rust corre en su propio hilo).
 
-    use super::*;
     use super::tests::build_test_midway;
+    use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::TestCaseError;
 
@@ -10069,9 +12211,14 @@ mod error_boundary_tests {
             assert_eq!(records_after.len(), records_before.len() + 1);
 
             let new_record = &records_after[0];
-            assert_eq!(new_record.source, diagnostics::CrashSource::ComponentBoundary);
+            assert_eq!(
+                new_record.source,
+                diagnostics::CrashSource::ComponentBoundary
+            );
             assert!(
-                new_record.message.contains("panic de prueba en guarded_update"),
+                new_record
+                    .message
+                    .contains("panic de prueba en guarded_update"),
                 "el mensaje del CrashRecord debe incluir el mensaje del panic capturado, fue: {}",
                 new_record.message
             );
@@ -10091,7 +12238,8 @@ mod error_boundary_tests {
         with_temp_diagnostics_path(|| {
             let records_before = diagnostics::read_crash_records().len();
 
-            let _element: Element<'static, Message> = guarded_view("TestComponent", || text("contenido normal").into());
+            let _element: Element<'static, Message> =
+                guarded_view("TestComponent", || text("contenido normal").into());
 
             assert_eq!(diagnostics::read_crash_records().len(), records_before);
         });
@@ -10114,9 +12262,14 @@ mod error_boundary_tests {
             assert_eq!(records_after.len(), records_before.len() + 1);
 
             let new_record = &records_after[0];
-            assert_eq!(new_record.source, diagnostics::CrashSource::ComponentBoundary);
+            assert_eq!(
+                new_record.source,
+                diagnostics::CrashSource::ComponentBoundary
+            );
             assert!(
-                new_record.message.contains("panic de prueba en guarded_view"),
+                new_record
+                    .message
+                    .contains("panic de prueba en guarded_view"),
                 "el mensaje del CrashRecord debe incluir el mensaje del panic capturado, fue: {}",
                 new_record.message
             );
@@ -10283,7 +12436,7 @@ mod resolve_startup_collection_tests {
                 let mut seen = std::collections::HashSet::new();
                 ids.into_iter()
                     .filter(|id| seen.insert(id.clone()))
-                    .map(|id| collection_with_id(id))
+                    .map(collection_with_id)
                     .collect::<Vec<_>>()
             })
             .prop_filter("must have at least one collection", |v| !v.is_empty())
@@ -10355,20 +12508,20 @@ mod navigation_toggle_preserves_composer_state_tests {
     //! Validates: Requirements 4.1, 4.2, 8.3
 
     use super::*;
+    use crate::curl::create_blank_draft;
+    use crate::state::AppState;
+    use midway_core::domain::cookies::CookieJarHandle;
     use midway_core::infra::sqlite_repository::SqliteRepository;
     use midway_core::runtime::request_executor::RequestExecutorHandle;
     use midway_core::runtime::secret_executor::SecretExecutorHandle;
-    use midway_core::domain::cookies::CookieJarHandle;
-    use crate::state::AppState;
-    use crate::curl::create_blank_draft;
     use proptest::prelude::*;
     use std::collections::VecDeque;
     use std::sync::Arc;
 
     /// Build a minimal AppState for testing (opens a temp SQLite DB).
     fn build_test_app_state() -> AppState {
-        let temp_file = tempfile::NamedTempFile::new()
-            .expect("failed to create temp file for test AppState");
+        let temp_file =
+            tempfile::NamedTempFile::new().expect("failed to create temp file for test AppState");
         let db_path = temp_file.path().to_path_buf();
 
         let runtime = tokio::runtime::Runtime::new()
@@ -10418,7 +12571,7 @@ mod navigation_toggle_preserves_composer_state_tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
-            theme_mode: Default::default(),
+            theme: ThemeSettingsState::default(),
             main_content_focus: focus,
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
@@ -10446,7 +12599,7 @@ mod navigation_toggle_preserves_composer_state_tests {
     fn arb_active_collection_id() -> impl Strategy<Value = Option<String>> {
         prop_oneof![
             3 => Just(None),
-            7 => "[a-z0-9]{1,20}".prop_map(|s| Some(s)),
+            7 => "[a-z0-9]{1,20}".prop_map(Some),
         ]
     }
 
@@ -10581,20 +12734,20 @@ mod collection_selection_workspace_property_tests {
     //! Validates: Requirements 4.3
 
     use super::*;
+    use crate::state::AppState;
+    use midway_core::domain::cookies::CookieJarHandle;
     use midway_core::domain::workspace::{CollectionSummary, CollectionWithRequests};
     use midway_core::infra::sqlite_repository::SqliteRepository;
     use midway_core::runtime::request_executor::RequestExecutorHandle;
     use midway_core::runtime::secret_executor::SecretExecutorHandle;
-    use midway_core::domain::cookies::CookieJarHandle;
-    use crate::state::AppState;
     use proptest::prelude::*;
     use std::collections::VecDeque;
     use std::sync::Arc;
 
     /// Build a minimal AppState for testing (opens a temp SQLite DB).
     fn build_test_app_state() -> AppState {
-        let temp_file = tempfile::NamedTempFile::new()
-            .expect("failed to create temp file for test AppState");
+        let temp_file =
+            tempfile::NamedTempFile::new().expect("failed to create temp file for test AppState");
         let db_path = temp_file.path().to_path_buf();
 
         let runtime = tokio::runtime::Runtime::new()
@@ -10634,14 +12787,16 @@ mod collection_selection_workspace_property_tests {
                 history: Vec::new(),
                 secrets: Vec::new(),
             },
-            tabs: vec![RequestTabState::from_draft(crate::curl::create_blank_draft())],
+            tabs: vec![RequestTabState::from_draft(
+                crate::curl::create_blank_draft(),
+            )],
             active_tab: Some(0),
             closed_tabs: VecDeque::new(),
             workspace_panel: WorkspacePanelState::default(),
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
-            theme_mode: Default::default(),
+            theme: ThemeSettingsState::default(),
             main_content_focus: MainContentFocus::WorkspaceSection,
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
@@ -10685,7 +12840,7 @@ mod collection_selection_workspace_property_tests {
                 let mut seen = std::collections::HashSet::new();
                 ids.into_iter()
                     .filter(|id| seen.insert(id.clone()))
-                    .map(|id| collection_with_id(id))
+                    .map(collection_with_id)
                     .collect::<Vec<_>>()
             })
             .prop_filter("must have at least one collection", |v| !v.is_empty())
@@ -10745,6 +12900,310 @@ mod collection_selection_workspace_property_tests {
                 state.active_collection_id,
                 selected_id,
             );
+        }
+    }
+}
+
+// Feature: midway-baseline-audit-and-first-vertical, Tarea 4.1 (Requisitos 6.1, 6.2)
+#[cfg(test)]
+mod theme_toggle_characterization_tests {
+    //! Feature: midway-baseline-audit-and-first-vertical, Tarea 4.1
+    //! Requisitos 6.1, 6.2.
+    //!
+    //! Test_Caracterización del comportamiento observable del toggle de tema:
+    //! `ThemeMessage::Toggled` alterna el modo de tema activo de `Midway`,
+    //! cambia con él la paleta derivada que consume `view` y marca la sesión
+    //! como sucia.
+    //!
+    //! Tras la Tarea 7.1 el modo activo se lee en `state.theme.mode()` en vez
+    //! del campo suelto `Midway.theme_mode`, y la transición la aplica la
+    //! vertical `ui/theme_settings`. Los valores esperados que este módulo
+    //! fija NO cambiaron: es exactamente esa invariancia la que demuestra que
+    //! el cableado de la vertical no alteró el comportamiento observable
+    //! (Req 8.7).
+    //!
+    //! Estos tests son la referencia de comportamiento que protege la
+    //! extracción de la vertical Tema/Ajustes (Tarea 7): tras el cableado,
+    //! el mismo mensaje debe producir el mismo `ThemeMode`, la misma paleta
+    //! derivada y la misma marca de sesión sucia, sin cambiar los valores
+    //! esperados que se fijan aquí.
+    //!
+    //! Tarea 7.3 agregó la aserción de paleta derivada
+    //! (`state.theme.design_system() == DesignSystem::for_mode(mode)`, la
+    //! misma expresión que evalúa `app::view`) sin modificar ninguno de los
+    //! valores esperados preexistentes.
+    //!
+    //! Headless por construcción: ni `update` ni `theme_settings::update`
+    //! abren ventana o tocan el runtime gráfico de iced.
+
+    use super::tests::build_test_midway;
+    use super::*;
+
+    /// Observación completa del comportamiento del toggle: modo activo,
+    /// paleta derivada que consume `view` y marca de sesión sucia.
+    struct Observed {
+        mode: ThemeMode,
+        design_system: DesignSystem,
+        dirty: bool,
+    }
+
+    /// Aplica `ThemeMessage::Toggled` sobre un `Midway` cuyo modo de tema
+    /// activo es `initial` y devuelve el `ThemeMode`, el `DesignSystem`
+    /// derivado y el flag `session.dirty` observados después de la
+    /// actualización.
+    fn toggle_once(initial: ThemeMode) -> Observed {
+        let mut state = build_test_midway(create_blank_draft());
+        state.theme = ThemeSettingsState::new(initial);
+        // Precondición explícita: la sesión arranca limpia, así que el
+        // `dirty == true` observado más abajo solo puede provenir del
+        // toggle.
+        state.session.dirty = false;
+
+        // Tarea 7.2: `update_theme` ya no existe; la ruta observable es
+        // `Message::Theme` → `theme_settings::update`. Los valores esperados
+        // que fijan los tests de abajo NO cambian (Req 8.7).
+        let _task = update(&mut state, Message::Theme(ThemeMessage::Toggled));
+
+        Observed {
+            mode: state.theme.mode(),
+            // Misma expresión que usa `app::view` para derivar la paleta.
+            design_system: state.theme.design_system(),
+            dirty: state.session.dirty,
+        }
+    }
+
+    /// Desde `Dark` (el valor por defecto del baseline), el toggle deja el
+    /// tema en `Light`, la paleta derivada de `Light` y la sesión sucia.
+    #[test]
+    fn toggled_from_dark_yields_light_and_marks_session_dirty() {
+        let observed = toggle_once(ThemeMode::Dark);
+
+        assert_eq!(observed.mode, ThemeMode::Light);
+        // Tarea 7.3: la paleta que consume `view` sigue siendo exactamente la
+        // que el baseline derivaba con `DesignSystem::for_mode(theme_mode)`.
+        assert_eq!(
+            observed.design_system,
+            DesignSystem::for_mode(ThemeMode::Light)
+        );
+        assert!(
+            observed.dirty,
+            "el toggle de tema debe marcar la sesión como sucia"
+        );
+    }
+
+    /// Desde `Light`, el toggle deja el tema en `Dark`, la paleta derivada de
+    /// `Dark` y la sesión sucia.
+    #[test]
+    fn toggled_from_light_yields_dark_and_marks_session_dirty() {
+        let observed = toggle_once(ThemeMode::Light);
+
+        assert_eq!(observed.mode, ThemeMode::Dark);
+        assert_eq!(
+            observed.design_system,
+            DesignSystem::for_mode(ThemeMode::Dark)
+        );
+        assert!(
+            observed.dirty,
+            "el toggle de tema debe marcar la sesión como sucia"
+        );
+    }
+
+    /// Dos toggles consecutivos devuelven el tema al valor inicial y la
+    /// sesión queda sucia: fija la involutividad observable del baseline.
+    #[test]
+    fn toggled_twice_returns_to_initial_mode_and_leaves_session_dirty() {
+        let initial = ThemeMode::default();
+        let mut state = build_test_midway(create_blank_draft());
+        state.theme = ThemeSettingsState::new(initial);
+        state.session.dirty = false;
+
+        let _first = update(&mut state, Message::Theme(ThemeMessage::Toggled));
+        let _second = update(&mut state, Message::Theme(ThemeMessage::Toggled));
+
+        assert_eq!(state.theme.mode(), initial);
+        assert_eq!(
+            state.theme.design_system(),
+            DesignSystem::for_mode(initial),
+            "tras dos toggles la paleta derivada vuelve a la del modo inicial"
+        );
+        assert!(
+            state.session.dirty,
+            "tras dos toggles la sesión sigue marcada como sucia"
+        );
+    }
+}
+
+// Feature: midway-baseline-audit-and-first-vertical, Tarea 4.4 (Requisito 9.4)
+#[cfg(test)]
+mod session_restore_property_tests {
+    //! Feature: midway-baseline-audit-and-first-vertical, Tarea 4.4
+    //! Requisito 9.4.
+    //!
+    //! Test_Caracterización de propiedad sobre `restore_pending_session` en
+    //! el baseline SIN CAMBIOS: restaurar un `SessionSnapshot` deja
+    //! `session.panel_sizes` igual a `snapshot.panel_sizes` y el modo de
+    //! tema activo igual a `snapshot.theme_mode`. No se modifica ningún
+    //! código de producción; este módulo es solo `#[cfg(test)]`.
+    //!
+    //! El "modo de tema activo" se observa en `session.theme_mode`: es
+    //! exactamente el valor con el que `Midway::new` construye
+    //! `Midway.theme` justo después de llamar a `restore_pending_session`
+    //! (`ThemeSettingsState::new(session.theme_mode)`), así que fijarlo aquí
+    //! fija el tema que la aplicación muestra al reabrirse.
+    //!
+    //! Headless por construcción: `restore_pending_session` opera solo
+    //! sobre `&mut SessionStoreState`, sin ventana, sin disco y sin red.
+    //!
+    //! Los generadores se definen localmente en vez de reutilizar los de
+    //! `session.rs`: los de allí son `pub(super)` dentro de
+    //! `session::tests`, no visibles desde este módulo.
+
+    use super::*;
+    use proptest::prelude::*;
+
+    /// `ThemeMode` arbitrario: el enum tiene exactamente dos variantes en
+    /// el baseline, así que se enumeran las dos en lugar de derivar una
+    /// estrategia.
+    fn arb_theme_mode() -> impl Strategy<Value = ThemeMode> {
+        prop_oneof![Just(ThemeMode::Light), Just(ThemeMode::Dark)]
+    }
+
+    /// `PanelSizes` arbitrario con valores finitos, incluyendo cero y
+    /// negativos: `restore_pending_session` copia el struct tal cual, así
+    /// que la propiedad debe cumplirse incluso para tamaños que la UI
+    /// nunca produciría. Se excluyen `NaN` e infinitos a propósito: con
+    /// `NaN` la igualdad de `f32` es falsa por definición y la propiedad
+    /// dejaría de hablar de preservación para hablar de aritmética de
+    /// punto flotante.
+    fn arb_panel_sizes() -> impl Strategy<Value = crate::session::PanelSizes> {
+        (
+            -1_000.0f32..5_000.0f32,
+            -1_000.0f32..5_000.0f32,
+            -1_000.0f32..5_000.0f32,
+        )
+            .prop_map(
+                |(workspace_panel_width, response_panel_height, request_panel_width)| {
+                    crate::session::PanelSizes {
+                        workspace_panel_width,
+                        response_panel_height,
+                        request_panel_width,
+                    }
+                },
+            )
+    }
+
+    fn arb_request_tab() -> impl Strategy<Value = RequestTab> {
+        prop_oneof![
+            Just(RequestTab::Params),
+            Just(RequestTab::Headers),
+            Just(RequestTab::Auth),
+            Just(RequestTab::Body),
+            Just(RequestTab::Tests),
+        ]
+    }
+
+    /// `TabSnapshot` con un `draft` en blanco al que solo se le varía la
+    /// URL: la propiedad no habla del contenido de las tabs, pero variar
+    /// su cantidad (incluido el caso de cero tabs, que tiene un `return`
+    /// temprano propio en `restore_pending_session`) sí importa para
+    /// cubrir todas las ramas de la función.
+    fn arb_tab_snapshot(id_prefix: &'static str) -> impl Strategy<Value = TabSnapshot> {
+        ("[a-z]{1,8}", "[a-z]{1,8}", arb_request_tab()).prop_map(
+            move |(id, host, active_request_tab)| {
+                let mut draft = create_blank_draft();
+                draft.url = format!("https://{host}.example.com/path");
+                TabSnapshot {
+                    id: format!("{id_prefix}-{id}"),
+                    draft,
+                    active_request_tab,
+                }
+            },
+        )
+    }
+
+    fn arb_tab_snapshots(id_prefix: &'static str) -> impl Strategy<Value = Vec<TabSnapshot>> {
+        proptest::collection::vec(arb_tab_snapshot(id_prefix), 0..=3)
+    }
+
+    /// `SessionSnapshot` arbitrario con la `version` actual del esquema:
+    /// las versiones incompatibles se descartan antes de llegar acá
+    /// (`load_session_or_default`), así que variar `version` no aportaría
+    /// cobertura a esta propiedad.
+    fn arb_session_snapshot() -> impl Strategy<Value = crate::session::SessionSnapshot> {
+        (
+            proptest::option::of("[a-z]{1,8}"),
+            arb_tab_snapshots("open"),
+            arb_tab_snapshots("closed"),
+            arb_panel_sizes(),
+            arb_theme_mode(),
+            "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+            proptest::option::of("[a-z]{1,8}"),
+        )
+            .prop_map(
+                |(
+                    active_tab_id,
+                    open_tabs,
+                    closed_tabs,
+                    panel_sizes,
+                    theme_mode,
+                    saved_at,
+                    active_collection_id,
+                )| crate::session::SessionSnapshot {
+                    version: crate::session::SESSION_SCHEMA_VERSION,
+                    active_tab_id,
+                    open_tabs,
+                    closed_tabs,
+                    panel_sizes,
+                    theme_mode,
+                    saved_at,
+                    active_collection_id,
+                },
+            )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// Feature: midway-baseline-audit-and-first-vertical, Property 3: La
+        /// restauración de sesión preserva tamaños de panel y tema.
+        ///
+        /// Para todo `SessionSnapshot`, restaurarlo sobre el estado de la
+        /// aplicación deja `session.panel_sizes` igual a
+        /// `snapshot.panel_sizes` y el modo de tema activo igual a
+        /// `snapshot.theme_mode`.
+        #[test]
+        fn property_3_session_restore_preserves_panel_sizes_and_theme(
+            snapshot in arb_session_snapshot(),
+        ) {
+            let expected_panel_sizes = snapshot.panel_sizes.clone();
+            let expected_theme_mode = snapshot.theme_mode;
+
+            let mut session = SessionStoreState {
+                pending_restore: Some(snapshot),
+                ..SessionStoreState::default()
+            };
+
+            let (tabs, active_tab, _active_collection_id) = restore_pending_session(&mut session);
+
+            prop_assert_eq!(
+                session.panel_sizes.clone(),
+                expected_panel_sizes,
+                "restaurar la sesión debe dejar session.panel_sizes igual al snapshot"
+            );
+
+            // El modo de tema activo es el que `Midway::new` lee de
+            // `session.theme_mode` inmediatamente después de restaurar.
+            let active_theme_mode = session.theme_mode;
+            prop_assert_eq!(
+                active_theme_mode,
+                expected_theme_mode,
+                "restaurar la sesión debe dejar el tema activo igual al del snapshot"
+            );
+
+            // Invariante estructural que acompaña a la restauración: nunca
+            // se arranca con cero tabs, y la tab activa es significativa.
+            prop_assert!(!tabs.is_empty(), "la restauración nunca debe dejar cero tabs");
+            prop_assert!(active_tab.is_some(), "la restauración siempre resuelve una tab activa");
         }
     }
 }

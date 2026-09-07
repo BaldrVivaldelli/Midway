@@ -153,10 +153,14 @@ pub async fn run_collection(
 
         let effective_environment = match override_environment.as_ref() {
             Some(environment) => Some(environment.clone()),
-            None => load_environment_record(&app_state, record.draft.environment_id.as_deref()).await?,
+            None => {
+                load_environment_record(&app_state, record.draft.environment_id.as_deref()).await?
+            }
         };
 
-        let environment_name = effective_environment.as_ref().map(|environment| environment.name.clone());
+        let environment_name = effective_environment
+            .as_ref()
+            .map(|environment| environment.name.clone());
         let current_index = index as u64 + 1;
         let executed_at = Utc::now().to_rfc3339();
 
@@ -369,7 +373,10 @@ async fn load_environment_record(
         return Ok(None);
     };
 
-    let environment = app_state.repository.get_environment_by_id(environment_id).await?;
+    let environment = app_state
+        .repository
+        .get_environment_by_id(environment_id)
+        .await?;
 
     match environment {
         Some(environment) => Ok(Some(environment)),
@@ -419,7 +426,10 @@ async fn execute_draft_with_environment(
     let assertion_report = evaluate_response_assertions(&response, &draft.response_tests);
 
     Ok((
-        RequestExecutionOutcome { response, assertion_report },
+        RequestExecutionOutcome {
+            response,
+            assertion_report,
+        },
         resolved_url,
         resolution.environment_name.or(environment_name),
     ))
@@ -432,7 +442,7 @@ mod tests {
     //! Verifica el mecanismo de progreso incremental de `run_collection`
     //! (envío por `mpsc::UnboundedSender<CollectionRunProgressEvent>`) contra
     //! un `AppState` real (`SqliteRepository` en un archivo SQLite temporal
-    //! + `RequestExecutorHandle` real) y un servidor HTTP mock local
+    //! junto con un `RequestExecutorHandle` real) y un servidor HTTP mock local
     //! (`wiremock`), sin mockear `run_collection` en sí. No repite la
     //! cobertura de las fases 9.3-9.6 (reporte consolidado detallado,
     //! environment de override, fallos por request, colección vacía,
@@ -473,7 +483,9 @@ mod tests {
         let app_state = AppState {
             repository,
             request_executor: RequestExecutorHandle::spawn(client),
-            secret_executor: SecretExecutorHandle::spawn("midway-test-collection-runner".to_string()),
+            secret_executor: SecretExecutorHandle::spawn(
+                "midway-test-collection-runner".to_string(),
+            ),
             cookie_jar: CookieJarHandle::new(),
         };
 
@@ -638,7 +650,10 @@ mod tests {
 
         let phases: Vec<CollectionRunPhase> = events.iter().map(|event| event.phase).collect();
         assert!(
-            matches!(phases.as_slice(), [CollectionRunPhase::Started, CollectionRunPhase::Finished]),
+            matches!(
+                phases.as_slice(),
+                [CollectionRunPhase::Started, CollectionRunPhase::Finished]
+            ),
             "orden de fases inesperado: {phases:?}"
         );
 
@@ -689,17 +704,20 @@ mod tests {
         // mismo segundo, el orden entre ellos no sería determinístico. Los
         // items del reporte se identifican más abajo por `request_name`,
         // no por posición, para no depender de los detalles de ese orden.
-        let mut failing_assertion_draft = blank_draft_for(format!("{}/ok-but-assertion-fails", mock_server.uri()));
+        let mut failing_assertion_draft =
+            blank_draft_for(format!("{}/ok-but-assertion-fails", mock_server.uri()));
         failing_assertion_draft.name = "1 - assertion fallida".to_string();
-        failing_assertion_draft.response_tests.push(ResponseAssertion {
-            id: "assertion-1".to_string(),
-            name: "status debería ser 404".to_string(),
-            enabled: true,
-            source: AssertionSource::Status,
-            operator: AssertionOperator::Equals,
-            selector: None,
-            expected: "404".to_string(),
-        });
+        failing_assertion_draft
+            .response_tests
+            .push(ResponseAssertion {
+                id: "assertion-1".to_string(),
+                name: "status debería ser 404".to_string(),
+                enabled: true,
+                source: AssertionSource::Status,
+                operator: AssertionOperator::Equals,
+                selector: None,
+                expected: "404".to_string(),
+            });
         app_state
             .repository
             .save_request(SaveRequestInput {
@@ -855,7 +873,9 @@ mod tests {
         let (progress_tx, mut progress_rx) = mpsc::unbounded();
         let (cancel_tx, cancel_rx) = oneshot::channel();
         // Se cancela antes de siquiera invocar `run_collection`.
-        cancel_tx.send(()).expect("no se pudo enviar la señal de cancelación");
+        cancel_tx
+            .send(())
+            .expect("no se pudo enviar la señal de cancelación");
 
         let report = run_collection(
             Arc::clone(&app_state),
@@ -886,7 +906,10 @@ mod tests {
         // emitidas, aunque aquí `total_requests` sí refleja los 3 guardados).
         let phases: Vec<CollectionRunPhase> = events.iter().map(|event| event.phase).collect();
         assert!(
-            matches!(phases.as_slice(), [CollectionRunPhase::Started, CollectionRunPhase::Finished]),
+            matches!(
+                phases.as_slice(),
+                [CollectionRunPhase::Started, CollectionRunPhase::Finished]
+            ),
             "orden de fases inesperado: {phases:?}"
         );
         assert!(events.last().unwrap().finished_at.is_some());
@@ -911,7 +934,9 @@ mod tests {
     async fn run_collection_cancelled_mid_sequence_reports_only_completed_items() {
         let mock_server = MockServer::start().await;
         Mock::given(http_method_matcher("GET"))
-            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(200)))
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(200)),
+            )
             .mount(&mock_server)
             .await;
 
@@ -976,7 +1001,9 @@ mod tests {
         // propiedad): solo importa que se completó exactamente uno de los
         // cuatro nombres guardados.
         let completed_names: std::collections::HashSet<&str> =
-            ["0 - request", "1 - request", "2 - request", "3 - request"].into_iter().collect();
+            ["0 - request", "1 - request", "2 - request", "3 - request"]
+                .into_iter()
+                .collect();
         assert!(completed_names.contains(report.items[0].request_name.as_str()));
 
         // El primer request SHALL haber completado normalmente antes de la
@@ -988,7 +1015,10 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| matches!(event.phase, CollectionRunPhase::RequestFinished)));
-        assert!(matches!(events.last().unwrap().phase, CollectionRunPhase::Finished));
+        assert!(matches!(
+            events.last().unwrap().phase,
+            CollectionRunPhase::Finished
+        ));
     }
 
     // -----------------------------------------------------------------
@@ -1086,7 +1116,11 @@ mod tests {
     /// esta property realiza llamadas HTTP reales (aunque locales).
     const SIMULATED_DELAY_MS: u64 = 100;
 
-    fn draft_for_outcome(index: usize, outcome: SimulatedOutcome, mock_server: &MockServer) -> RequestDraft {
+    fn draft_for_outcome(
+        index: usize,
+        outcome: SimulatedOutcome,
+        mock_server: &MockServer,
+    ) -> RequestDraft {
         let mut draft = crate::curl::create_blank_draft();
         draft.method = HttpMethod::GET;
         draft.name = format!("property-18-request-{index}");

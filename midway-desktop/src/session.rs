@@ -13,8 +13,8 @@
 //! `rename` mismo (una operación indivisible a nivel de sistema operativo).
 //!
 //! `TabSnapshot`/`RequestTab` se reutilizan tal cual desde `crate::app`
-//! (coinciden exactamente con la forma descrita en el diseño, "Data Models
-//! > Formato de sesión persistida"), en lugar de duplicar un tipo idéntico
+//! (coinciden exactamente con la forma descrita en el diseño, sección
+//! "Data Models / Formato de sesión persistida"), en lugar de duplicar un tipo idéntico
 //! aquí.
 //!
 //! El descarte seguro de una sesión corrupta o con `version` incompatible
@@ -139,7 +139,9 @@ pub struct SessionSnapshot {
 /// crearlo si no existe.
 pub fn session_file_path() -> AppResult<PathBuf> {
     let data_dir = dirs::data_dir()
-        .ok_or_else(|| AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string()))?
+        .ok_or_else(|| {
+            AppError::Io("No se pudo resolver el directorio de datos del sistema.".to_string())
+        })?
         .join(APP_NAME);
 
     Ok(data_dir.join(SESSION_FILE_NAME))
@@ -172,8 +174,8 @@ fn write_session_snapshot_at(path: &Path, snapshot: &SessionSnapshot) -> AppResu
 
     std::fs::create_dir_all(parent).map_err(|error| AppError::Io(error.to_string()))?;
 
-    let serialized =
-        serde_json::to_string(snapshot).map_err(|error| AppError::Serialization(error.to_string()))?;
+    let serialized = serde_json::to_string(snapshot)
+        .map_err(|error| AppError::Serialization(error.to_string()))?;
 
     let tmp_path = parent.join(SESSION_TMP_FILE_NAME);
 
@@ -220,17 +222,17 @@ fn read_session_snapshot_at(path: &Path) -> AppResult<SessionSnapshot> {
 /// Distingue tres casos, porque solo uno de ellos amerita una notificación
 /// visible al usuario:
 ///
-/// - [`SessionLoadOutcome::Loaded`]: `session.json` existe, se pudo
+/// - [`SessionLoadOutcome::Loaded`] — `session.json` existe, se pudo
 ///   deserializar y su `version` coincide con [`SESSION_SCHEMA_VERSION`].
 ///   Caso normal, sin notificación.
-/// - [`SessionLoadOutcome::NotFound`]: `session.json` no existe todavía
+/// - [`SessionLoadOutcome::NotFound`] — `session.json` no existe todavía
 ///   (primer arranque, o la app se ejecuta con un data dir nuevo). Esto NO
 ///   es una sesión "corrupta o incompatible" en el sentido del Criterio
 ///   6.10 (que enumera explícitamente solo "falla la deserialización" o
 ///   "`version` no es compatible"), así que tampoco amerita notificación:
 ///   mostrar "tu sesión estaba corrupta" en una instalación nueva sería un
 ///   falso positivo confuso para el usuario.
-/// - [`SessionLoadOutcome::DiscardedCorruptOrIncompatible`]: `session.json`
+/// - [`SessionLoadOutcome::DiscardedCorruptOrIncompatible`] — `session.json`
 ///   existe pero no se pudo leer/deserializar, o se pudo deserializar pero
 ///   su `version` no coincide con [`SESSION_SCHEMA_VERSION`]. Este es el
 ///   único caso que amerita notificar al usuario (Criterio 6.10): el
@@ -306,7 +308,9 @@ mod tests {
 
     use super::*;
     use crate::app::RequestTab;
-    use midway_core::domain::http::{AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft};
+    use midway_core::domain::http::{
+        AuthConfig, BodyMode, HttpMethod, RequestBodyDraft, RequestDraft,
+    };
 
     fn session_path_in(dir: &Path) -> PathBuf {
         dir.join(SESSION_FILE_NAME)
@@ -344,7 +348,10 @@ mod tests {
         SessionSnapshot {
             version: SESSION_SCHEMA_VERSION,
             active_tab_id: Some("tab-1".to_string()),
-            open_tabs: vec![sample_tab("tab-1", "https://example.com/a"), sample_tab("tab-2", "https://example.com/b")],
+            open_tabs: vec![
+                sample_tab("tab-1", "https://example.com/a"),
+                sample_tab("tab-2", "https://example.com/b"),
+            ],
             closed_tabs: vec![sample_tab("tab-closed-1", "https://example.com/closed")],
             panel_sizes: PanelSizes {
                 workspace_panel_width: 280.0,
@@ -359,10 +366,9 @@ mod tests {
 
     #[test]
     fn panel_sizes_from_older_session_default_request_panel_width() {
-        let panel_sizes: PanelSizes = serde_json::from_str(
-            r#"{"workspacePanelWidth":280.0,"responsePanelHeight":320.0}"#,
-        )
-        .expect("el formato anterior debe seguir siendo compatible");
+        let panel_sizes: PanelSizes =
+            serde_json::from_str(r#"{"workspacePanelWidth":280.0,"responsePanelHeight":320.0}"#)
+                .expect("el formato anterior debe seguir siendo compatible");
 
         assert_eq!(panel_sizes.workspace_panel_width, 280.0);
         assert_eq!(panel_sizes.response_panel_height, 320.0);
@@ -377,7 +383,8 @@ mod tests {
         let path = session_path_in(temp_dir.path());
         let snapshot = sample_snapshot();
 
-        write_session_snapshot_at(&path, &snapshot).expect("la escritura atómica no debería fallar");
+        write_session_snapshot_at(&path, &snapshot)
+            .expect("la escritura atómica no debería fallar");
 
         let read_back = read_session_snapshot_at(&path).expect("la lectura no debería fallar");
 
@@ -392,7 +399,11 @@ mod tests {
             assert_eq!(actual.draft.url, expected.draft.url);
             assert_eq!(actual.active_request_tab, expected.active_request_tab);
         }
-        for (actual, expected) in read_back.closed_tabs.iter().zip(snapshot.closed_tabs.iter()) {
+        for (actual, expected) in read_back
+            .closed_tabs
+            .iter()
+            .zip(snapshot.closed_tabs.iter())
+        {
             assert_eq!(actual.id, expected.id);
             assert_eq!(actual.draft.url, expected.draft.url);
         }
@@ -408,11 +419,18 @@ mod tests {
         let path = session_path_in(temp_dir.path());
         let snapshot = sample_snapshot();
 
-        write_session_snapshot_at(&path, &snapshot).expect("la escritura atómica no debería fallar");
+        write_session_snapshot_at(&path, &snapshot)
+            .expect("la escritura atómica no debería fallar");
 
         let tmp_path = temp_dir.path().join(SESSION_TMP_FILE_NAME);
-        assert!(!tmp_path.exists(), "el archivo temporal no debería sobrevivir a un rename exitoso");
-        assert!(path.exists(), "el archivo final debería existir tras la escritura");
+        assert!(
+            !tmp_path.exists(),
+            "el archivo temporal no debería sobrevivir a un rename exitoso"
+        );
+        assert!(
+            path.exists(),
+            "el archivo final debería existir tras la escritura"
+        );
 
         let read_back = read_session_snapshot_at(&path).expect("la lectura no debería fallar");
         assert_eq!(read_back.version, snapshot.version);
@@ -483,13 +501,17 @@ mod tests {
         fn invalid_json_returns_discarded_corrupt_with_reason() {
             let temp_dir = tempfile::tempdir().expect("no se pudo crear el directorio temporal");
             let path = session_path_in(temp_dir.path());
-            std::fs::write(&path, "{ esto no es JSON válido").expect("no se pudo escribir el archivo de prueba");
+            std::fs::write(&path, "{ esto no es JSON válido")
+                .expect("no se pudo escribir el archivo de prueba");
 
             let outcome = load_session_or_default_at(&path);
 
             match outcome {
                 SessionLoadOutcome::DiscardedCorruptOrIncompatible { reason } => {
-                    assert!(!reason.is_empty(), "el motivo del descarte no debería estar vacío");
+                    assert!(
+                        !reason.is_empty(),
+                        "el motivo del descarte no debería estar vacío"
+                    );
                 }
                 other => panic!("se esperaba DiscardedCorruptOrIncompatible, se obtuvo {other:?}"),
             }
@@ -510,7 +532,10 @@ mod tests {
 
             match outcome {
                 SessionLoadOutcome::DiscardedCorruptOrIncompatible { reason } => {
-                    assert!(!reason.is_empty(), "el motivo del descarte no debería estar vacío");
+                    assert!(
+                        !reason.is_empty(),
+                        "el motivo del descarte no debería estar vacío"
+                    );
                 }
                 other => panic!("se esperaba DiscardedCorruptOrIncompatible, se obtuvo {other:?}"),
             }
@@ -712,7 +737,7 @@ mod tests {
         /// round-trip de serialización, así que no es necesario evitar
         /// ninguna sintaxis en particular (a diferencia de
         /// `arb_preview_token` en `app.rs`, Property 8).
-        fn arb_token() -> impl Strategy<Value = String> {
+        pub(super) fn arb_token() -> impl Strategy<Value = String> {
             "[a-zA-Z][a-zA-Z0-9_-]{0,9}".prop_map(|s| s.to_string())
         }
 
@@ -814,19 +839,21 @@ mod tests {
                 arb_body(),
                 arb_response_tests(),
             )
-                .prop_map(|(method, url, query, headers, auth, body, response_tests)| RequestDraft {
-                    id: None,
-                    name: "round-trip draft".to_string(),
-                    method,
-                    url,
-                    query,
-                    headers,
-                    auth,
-                    body,
-                    timeout_ms: 30_000,
-                    environment_id: None,
-                    response_tests,
-                })
+                .prop_map(
+                    |(method, url, query, headers, auth, body, response_tests)| RequestDraft {
+                        id: None,
+                        name: "round-trip draft".to_string(),
+                        method,
+                        url,
+                        query,
+                        headers,
+                        auth,
+                        body,
+                        timeout_ms: 30_000,
+                        environment_id: None,
+                        response_tests,
+                    },
+                )
         }
 
         fn arb_request_tab() -> impl Strategy<Value = RequestTab> {
@@ -849,20 +876,22 @@ mod tests {
             )
         }
 
-        fn arb_tab_snapshots(id_prefix: &'static str) -> impl Strategy<Value = Vec<TabSnapshot>> {
+        pub(super) fn arb_tab_snapshots(
+            id_prefix: &'static str,
+        ) -> impl Strategy<Value = Vec<TabSnapshot>> {
             proptest::collection::vec(arb_tab_snapshot(id_prefix), 0..=3)
         }
 
         /// Rango finito y acotado, para evitar `NaN`/infinito (que
         /// romperían la comparación de igualdad estructural, ya que
         /// `NaN != NaN`).
-        fn arb_panel_sizes() -> impl Strategy<Value = PanelSizes> {
-            (
-                50.0f32..2000.0f32,
-                50.0f32..2000.0f32,
-                50.0f32..2000.0f32,
-            )
-            .prop_map(
+        ///
+        /// `pub(super)` para que el módulo hermano
+        /// `session_snapshot_serde_round_trip_property_tests` (Property 2
+        /// del spec `midway-baseline-audit-and-first-vertical`) reutilice
+        /// este generador en lugar de duplicarlo.
+        pub(super) fn arb_panel_sizes() -> impl Strategy<Value = PanelSizes> {
+            (50.0f32..2000.0f32, 50.0f32..2000.0f32, 50.0f32..2000.0f32).prop_map(
                 |(workspace_panel_width, response_panel_height, request_panel_width)| PanelSizes {
                     workspace_panel_width,
                     response_panel_height,
@@ -875,7 +904,7 @@ mod tests {
         /// se valida semánticamente al leer (Tarea 11.4), así que basta
         /// con variar el contenido, no con generar fechas válidas de
         /// calendario.
-        fn arb_saved_at() -> impl Strategy<Value = String> {
+        pub(super) fn arb_saved_at() -> impl Strategy<Value = String> {
             "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z".prop_map(|s| s.to_string())
         }
 
@@ -895,7 +924,14 @@ mod tests {
                 proptest::option::of(arb_token()),
             )
                 .prop_map(
-                    |(active_tab_id, open_tabs, closed_tabs, panel_sizes, saved_at, active_collection_id)| SessionSnapshot {
+                    |(
+                        active_tab_id,
+                        open_tabs,
+                        closed_tabs,
+                        panel_sizes,
+                        saved_at,
+                        active_collection_id,
+                    )| SessionSnapshot {
                         version: SESSION_SCHEMA_VERSION,
                         active_tab_id,
                         open_tabs,
@@ -1049,6 +1085,247 @@ mod tests {
                     "active_collection_id debe ser None cuando el campo está ausente del JSON"
                 );
             }
+        }
+    }
+
+    /// Test de caracterización del baseline SIN CAMBIOS (spec
+    /// `midway-baseline-audit-and-first-vertical`, Tarea 4.2, Property 2):
+    /// el ida y vuelta de serialización de `SessionSnapshot` a través de
+    /// `serde_json`, con foco explícito en `theme_mode` y en TODOS los
+    /// campos de `panel_sizes` (Criterio 6.3).
+    ///
+    /// Complementa (no duplica) el `property_20_...` de arriba: aquel
+    /// ejercita la persistencia en disco (`write_session_snapshot_at` +
+    /// `read_session_snapshot_at`) manteniendo `theme_mode` fijo en su
+    /// valor por defecto, mientras que esta propiedad ejercita la
+    /// (de)serialización pura y VARÍA `theme_mode` sobre sus dos
+    /// variantes, que es exactamente el campo cuyo comportamiento
+    /// observable debe quedar fijado antes de extraer la vertical de tema
+    /// (Requisitos 13.7, 13.11: el estado del usuario se persiste, se
+    /// recupera tras reiniciar y los datos existentes se preservan).
+    ///
+    /// Reutiliza los generadores ya existentes en
+    /// [`session_snapshot_round_trip_property_tests`] (`arb_panel_sizes`,
+    /// `arb_tab_snapshots`, `arb_saved_at`, `arb_token`) en lugar de
+    /// duplicarlos.
+    mod session_snapshot_serde_round_trip_property_tests {
+        use super::session_snapshot_round_trip_property_tests::{
+            arb_panel_sizes, arb_saved_at, arb_tab_snapshots, arb_token,
+        };
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Cubre las dos variantes de `ThemeMode` del baseline.
+        fn arb_theme_mode() -> impl Strategy<Value = ThemeMode> {
+            prop_oneof![Just(ThemeMode::Light), Just(ThemeMode::Dark)]
+        }
+
+        /// `SessionSnapshot` arbitrario con `theme_mode` variable.
+        /// `version` se mantiene en [`SESSION_SCHEMA_VERSION`]: esta
+        /// propiedad verifica fidelidad del ida y vuelta, no detección de
+        /// esquema incompatible.
+        fn arb_session_snapshot_with_theme() -> impl Strategy<Value = SessionSnapshot> {
+            (
+                proptest::option::of(arb_token()),
+                arb_tab_snapshots("open"),
+                arb_tab_snapshots("closed"),
+                arb_panel_sizes(),
+                arb_theme_mode(),
+                arb_saved_at(),
+                proptest::option::of(arb_token()),
+            )
+                .prop_map(
+                    |(
+                        active_tab_id,
+                        open_tabs,
+                        closed_tabs,
+                        panel_sizes,
+                        theme_mode,
+                        saved_at,
+                        active_collection_id,
+                    )| SessionSnapshot {
+                        version: SESSION_SCHEMA_VERSION,
+                        active_tab_id,
+                        open_tabs,
+                        closed_tabs,
+                        panel_sizes,
+                        theme_mode,
+                        saved_at,
+                        active_collection_id,
+                    },
+                )
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+            // Feature: midway-baseline-audit-and-first-vertical, Property 2: Para todo
+            // `SessionSnapshot` válido, serializarlo a JSON y deserializarlo produce un
+            // snapshot igual al original, preservando en particular `theme_mode` y todos
+            // los campos de `panel_sizes`.
+            /// **Validates: Requirements 6.3, 13.7, 13.11**
+            #[test]
+            fn property_2_session_snapshot_json_round_trip_preserves_theme_and_panel_sizes(
+                snapshot in arb_session_snapshot_with_theme(),
+            ) {
+                let json = serde_json::to_string(&snapshot)
+                    .expect("serializar un SessionSnapshot construido no debería fallar");
+
+                let deserialized: SessionSnapshot = serde_json::from_str(&json)
+                    .expect("deserializar el JSON producido por serde no debería fallar");
+
+                prop_assert_eq!(
+                    deserialized.theme_mode,
+                    snapshot.theme_mode,
+                    "theme_mode debe preservarse exactamente tras el ida y vuelta"
+                );
+                prop_assert_eq!(
+                    deserialized.panel_sizes.workspace_panel_width,
+                    snapshot.panel_sizes.workspace_panel_width,
+                    "panel_sizes.workspace_panel_width debe preservarse exactamente"
+                );
+                prop_assert_eq!(
+                    deserialized.panel_sizes.response_panel_height,
+                    snapshot.panel_sizes.response_panel_height,
+                    "panel_sizes.response_panel_height debe preservarse exactamente"
+                );
+                prop_assert_eq!(
+                    deserialized.panel_sizes.request_panel_width,
+                    snapshot.panel_sizes.request_panel_width,
+                    "panel_sizes.request_panel_width debe preservarse exactamente"
+                );
+                prop_assert_eq!(
+                    deserialized,
+                    snapshot,
+                    "el snapshot completo debe ser igual al original tras el ida y vuelta"
+                );
+            }
+        }
+    }
+
+    /// Tests de ejemplo de caracterización del ESQUEMA de sesión del
+    /// baseline SIN CAMBIOS (spec `midway-baseline-audit-and-first-vertical`,
+    /// Tarea 4.3; Criterios 6.3, 11.5, 13.11).
+    ///
+    /// Fijan tres hechos observables del esquema persistido que el
+    /// incremento de UX asume vigentes y no debe alterar:
+    ///
+    /// 1. La clave JSON de la altura del panel de respuesta es
+    ///    EXACTAMENTE `panelSizes.responsePanelHeight` (el arrastre del
+    ///    divisor de respuesta escribe ese campo ya existente; no lo crea
+    ///    ni lo renombra).
+    /// 2. Un `session.json` que solo trae los campos requeridos -sin
+    ///    ninguno de los campos opcionales con `serde(default)`- sigue
+    ///    deserializando, con los valores por defecto del baseline
+    ///    (Criterio 13.11: los datos existentes del usuario se preservan;
+    ///    una sesión escrita por una versión anterior no se descarta como
+    ///    corrupta).
+    /// 3. Tripwire: [`SESSION_SCHEMA_VERSION`] vale `1`. Si un cambio
+    ///    futuro toca el esquema sin declararlo, este test falla y obliga
+    ///    a aplicar el Req 11.5 completo (versión de esquema, respaldo
+    ///    previo, migración transaccional, validación posterior, rollback
+    ///    y tests desde versiones anteriores).
+    ///
+    /// Son tests de ejemplo (sin Property numerada) y no modifican código
+    /// de producción.
+    mod session_schema_characterization_tests {
+        use super::*;
+
+        /// La altura del panel de respuesta serializa bajo la clave
+        /// `responsePanelHeight` dentro del objeto `panelSizes`, con ese
+        /// nombre exacto (y no bajo el nombre `snake_case` del campo de
+        /// Rust).
+        #[test]
+        fn panel_sizes_json_key_is_exactly_response_panel_height() {
+            let mut snapshot = sample_snapshot();
+            snapshot.panel_sizes.response_panel_height = 275.0;
+
+            let json: serde_json::Value = serde_json::to_value(&snapshot)
+                .expect("serializar un SessionSnapshot construido no debería fallar");
+
+            let panel_sizes = json
+                .get("panelSizes")
+                .expect("el snapshot debe serializar la clave `panelSizes`")
+                .as_object()
+                .expect("`panelSizes` debe serializar como objeto JSON");
+
+            assert!(
+                panel_sizes.contains_key("responsePanelHeight"),
+                "`panelSizes` debe contener la clave exacta `responsePanelHeight`, claves presentes: {:?}",
+                panel_sizes.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                !panel_sizes.contains_key("response_panel_height"),
+                "`panelSizes` no debe usar el nombre snake_case del campo de Rust"
+            );
+            assert_eq!(
+                panel_sizes
+                    .get("responsePanelHeight")
+                    .and_then(serde_json::Value::as_f64),
+                Some(275.0),
+                "`responsePanelHeight` debe transportar el valor de `response_panel_height`"
+            );
+        }
+
+        /// Un `session.json` con solo los campos requeridos deserializa:
+        /// los campos con `serde(default)` (`panelSizes.requestPanelWidth`,
+        /// `themeMode`, `activeCollectionId`) toman su valor por defecto
+        /// en lugar de hacer fallar la lectura.
+        ///
+        /// El `theme_mode` esperado es [`ThemeMode::default()`], que en el
+        /// baseline es `ThemeMode::Dark`.
+        #[test]
+        fn session_json_without_optional_fields_deserializes_with_defaults() {
+            let json = r#"{
+                "version": 1,
+                "activeTabId": null,
+                "openTabs": [],
+                "closedTabs": [],
+                "panelSizes": {
+                    "workspacePanelWidth": 280.0,
+                    "responsePanelHeight": 320.0
+                },
+                "savedAt": "2024-01-01T00:00:00Z"
+            }"#;
+
+            let snapshot: SessionSnapshot = serde_json::from_str(json)
+                .expect("un session.json sin campos opcionales debe seguir deserializando");
+
+            assert_eq!(snapshot.version, SESSION_SCHEMA_VERSION);
+            assert_eq!(snapshot.active_tab_id, None);
+            assert!(snapshot.open_tabs.is_empty());
+            assert!(snapshot.closed_tabs.is_empty());
+            assert_eq!(snapshot.panel_sizes.workspace_panel_width, 280.0);
+            assert_eq!(snapshot.panel_sizes.response_panel_height, 320.0);
+            assert_eq!(
+                snapshot.panel_sizes.request_panel_width,
+                default_request_panel_width(),
+                "`requestPanelWidth` ausente debe tomar su valor por defecto"
+            );
+            assert_eq!(
+                snapshot.theme_mode,
+                ThemeMode::default(),
+                "`themeMode` ausente debe tomar el tema por defecto del baseline"
+            );
+            assert_eq!(
+                snapshot.active_collection_id, None,
+                "`activeCollectionId` ausente debe deserializar como None"
+            );
+            assert_eq!(snapshot.saved_at, "2024-01-01T00:00:00Z");
+        }
+
+        /// Tripwire de esquema: `SESSION_SCHEMA_VERSION` vale `1` en el
+        /// baseline. Este spec no modifica la persistencia, así que este
+        /// valor no debe cambiar; si un cambio futuro lo requiere, aplica
+        /// el Req 11.5 completo antes de tocarlo.
+        #[test]
+        fn session_schema_version_tripwire_is_one() {
+            assert_eq!(
+                SESSION_SCHEMA_VERSION, 1,
+                "cambiar SESSION_SCHEMA_VERSION exige el Req 11.5 completo: versión de esquema, \
+                 respaldo previo, migración transaccional, validación posterior, rollback y tests \
+                 desde versiones anteriores"
+            );
         }
     }
 }

@@ -157,8 +157,10 @@ impl TextEditorState {
     /// por el llamador, ya que este componente no conoce el `Message` de
     /// nivel superior de la aplicación.
     pub fn view<Message: Clone>(&self) -> TextEditor<'_, iced_highlighter::Highlighter, Message> {
-        iced::widget::text_editor(&self.content)
-            .highlight(&self.highlighter_settings.token, self.highlighter_settings.theme)
+        iced::widget::text_editor(&self.content).highlight(
+            &self.highlighter_settings.token,
+            self.highlighter_settings.theme,
+        )
     }
 
     /// Reformatea el contenido actual como JSON con indentación estándar
@@ -477,9 +479,19 @@ mod tests {
     /// oráculo de referencia puede usar `to_lowercase()` + comparación
     /// directa sin caer en el problema documentado en
     /// `find_all_case_insensitive` para Unicode general.
-    fn arb_search_alphabet_string(size_range: std::ops::Range<usize>) -> impl Strategy<Value = String> {
-        let alphabet = prop_oneof![Just('a'), Just('b'), Just('c'), Just('A'), Just('B'), Just('C')];
-        proptest::collection::vec(alphabet, size_range).prop_map(|chars| chars.into_iter().collect())
+    fn arb_search_alphabet_string(
+        size_range: std::ops::Range<usize>,
+    ) -> impl Strategy<Value = String> {
+        let alphabet = prop_oneof![
+            Just('a'),
+            Just('b'),
+            Just('c'),
+            Just('A'),
+            Just('B'),
+            Just('C')
+        ];
+        proptest::collection::vec(alphabet, size_range)
+            .prop_map(|chars| chars.into_iter().collect())
     }
 
     /// Oráculo de referencia, deliberadamente simple e independiente de

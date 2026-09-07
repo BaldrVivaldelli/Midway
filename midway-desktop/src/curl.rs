@@ -113,7 +113,10 @@ fn percent_decode(input: &str) -> Option<String> {
 /// original SIN el reemplazo de `+` (igual que el `catch { return value; }`
 /// de la referencia TypeScript).
 fn decode_query_value(value: &str) -> String {
-    let replaced: String = value.chars().map(|c| if c == '+' { ' ' } else { c }).collect();
+    let replaced: String = value
+        .chars()
+        .map(|c| if c == '+' { ' ' } else { c })
+        .collect();
     percent_decode(&replaced).unwrap_or_else(|| value.to_string())
 }
 
@@ -187,7 +190,10 @@ fn build_request_name_from_url(method: HttpMethod, raw_url: &str) -> String {
         return "Nueva petición".to_string();
     }
     let without_query = trimmed.split('?').next().unwrap_or(trimmed);
-    let segments: Vec<&str> = without_query.split('/').filter(|segment| !segment.is_empty()).collect();
+    let segments: Vec<&str> = without_query
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     let last_segment = segments.last().copied().unwrap_or("petición");
     format!("{} {}", method_to_str(method), last_segment)
 }
@@ -392,10 +398,22 @@ fn parse_curl_form_token(token: &str, as_string: bool) -> Option<FormDataRow> {
     }
     if !as_string {
         if let Some(file_path) = raw_value.strip_prefix('@') {
-            return Some(create_form_data_row(&key, file_path, FormDataFieldKind::File, true, None));
+            return Some(create_form_data_row(
+                &key,
+                file_path,
+                FormDataFieldKind::File,
+                true,
+                None,
+            ));
         }
     }
-    Some(create_form_data_row(&key, raw_value, FormDataFieldKind::Text, true, None))
+    Some(create_form_data_row(
+        &key,
+        raw_value,
+        FormDataFieldKind::Text,
+        true,
+        None,
+    ))
 }
 
 /// Equivalente a `value.match(/^Bearer\s+(.+)$/i)?.[1]`.
@@ -530,9 +548,15 @@ pub fn parse_curl_command_to_draft(command: &str) -> Result<(RequestDraft, Vec<S
             continue;
         }
 
-        let inline_data_prefix = ["--data=", "--data-raw=", "--data-binary=", "--data-ascii=", "--data-urlencode="]
-            .into_iter()
-            .find(|prefix| token.starts_with(prefix));
+        let inline_data_prefix = [
+            "--data=",
+            "--data-raw=",
+            "--data-binary=",
+            "--data-ascii=",
+            "--data-urlencode=",
+        ]
+        .into_iter()
+        .find(|prefix| token.starts_with(prefix));
         if let Some(prefix) = inline_data_prefix {
             data_tokens.push(token[prefix.len()..].to_string());
             if method.is_none() && !force_query_string {
@@ -631,7 +655,8 @@ pub fn parse_curl_command_to_draft(command: &str) -> Result<(RequestDraft, Vec<S
                         continue;
                     }
                 }
-                if lower_key == "content-type" && value.to_lowercase().contains("application/json") {
+                if lower_key == "content-type" && value.to_lowercase().contains("application/json")
+                {
                     has_json_content_type = true;
                 }
                 headers.push(create_row(&key, &value, true));
@@ -640,7 +665,9 @@ pub fn parse_curl_command_to_draft(command: &str) -> Result<(RequestDraft, Vec<S
     }
 
     if infer_json_body {
-        let has_content_type_header = headers.iter().any(|row| row.key.to_lowercase() == "content-type");
+        let has_content_type_header = headers
+            .iter()
+            .any(|row| row.key.to_lowercase() == "content-type");
         let has_accept_header = headers.iter().any(|row| row.key.to_lowercase() == "accept");
         if !has_content_type_header {
             headers.push(create_row("content-type", "application/json", true));
@@ -666,7 +693,8 @@ pub fn parse_curl_command_to_draft(command: &str) -> Result<(RequestDraft, Vec<S
         form_data = form_tokens;
     } else if !force_query_string && !data_tokens.is_empty() {
         body_value = data_tokens.join("&");
-        body_mode = if has_json_content_type || infer_json_body || looks_like_json_text(&body_value) {
+        body_mode = if has_json_content_type || infer_json_body || looks_like_json_text(&body_value)
+        {
             BodyMode::Json
         } else {
             BodyMode::Text
@@ -767,8 +795,7 @@ mod tests {
 
     fn header_strategy() -> impl Strategy<Value = GeneratedHeader> {
         prop_oneof![
-            (simple_token(), simple_token())
-                .prop_map(|(k, v)| GeneratedHeader::Plain(k, v)),
+            (simple_token(), simple_token()).prop_map(|(k, v)| GeneratedHeader::Plain(k, v)),
             simple_token().prop_map(GeneratedHeader::AuthorizationBearer),
         ]
     }
@@ -807,9 +834,8 @@ mod tests {
     /// Genera un cuerpo JSON simple (objeto plano de 0 a 3 pares clave/valor
     /// string) junto con su representación serializada.
     fn json_body_strategy() -> impl Strategy<Value = BTreeMap<String, String>> {
-        prop::collection::vec((simple_token(), simple_token()), 0..=3).prop_map(|pairs| {
-            pairs.into_iter().collect::<BTreeMap<_, _>>()
-        })
+        prop::collection::vec((simple_token(), simple_token()), 0..=3)
+            .prop_map(|pairs| pairs.into_iter().collect::<BTreeMap<_, _>>())
     }
 
     fn kv_rows_to_map(rows: &[KeyValueRow]) -> BTreeMap<String, String> {

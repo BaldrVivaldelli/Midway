@@ -13,11 +13,10 @@ use crate::{
     domain::{
         http::{HttpMethod, RequestDraft, ResponseEnvelope},
         workspace::{
-            validate_folder_name, validate_folder_placement,
-            validate_request_folder_association, CollectionSummary, CollectionWithRequests,
-            EnvironmentRecord, Folder, FolderValidationError, HistoryEntry,
-            SaveEnvironmentInput, SaveFolderInput, SaveRequestInput, SavedRequestRecord,
-            SecretMetadata, WorkspaceSnapshot,
+            validate_folder_name, validate_folder_placement, validate_request_folder_association,
+            CollectionSummary, CollectionWithRequests, EnvironmentRecord, Folder,
+            FolderValidationError, HistoryEntry, SaveEnvironmentInput, SaveFolderInput,
+            SaveRequestInput, SavedRequestRecord, SecretMetadata, WorkspaceSnapshot,
         },
     },
 };
@@ -480,8 +479,6 @@ impl SqliteRepository {
             .map_err(map_db_err)
     }
 
-
-
     pub async fn get_collection_with_requests(
         &self,
         collection_id: &str,
@@ -760,7 +757,9 @@ impl SqliteRepository {
         let name = draft.name.clone();
         let method = method_to_string(&draft.method);
         let response_status = response.as_ref().map(|response| response.status as i64);
-        let duration_ms = response.as_ref().map(|response| response.duration_ms as i64);
+        let duration_ms = response
+            .as_ref()
+            .map(|response| response.duration_ms as i64);
         let created_at = now_rfc3339();
 
         self.connection
@@ -947,7 +946,7 @@ impl SqliteRepository {
 
                 // Validate placement
                 validate_folder_placement(&folder_for_validation, &existing_folders)
-                    .map_err(|e| folder_validation_to_rusqlite_error(e))?;
+                    .map_err(folder_validation_to_rusqlite_error)?;
 
                 tx.execute(
                     "INSERT INTO folders (id, collection_id, parent_folder_id, name)
@@ -1040,7 +1039,7 @@ impl SqliteRepository {
 
                 // Validate placement with the new parent
                 validate_folder_placement(&moved_folder, &existing_folders)
-                    .map_err(|e| folder_validation_to_rusqlite_error(e))?;
+                    .map_err(folder_validation_to_rusqlite_error)?;
 
                 tx.execute(
                     "UPDATE folders SET parent_folder_id = ?2 WHERE id = ?1",
@@ -1078,10 +1077,7 @@ impl SqliteRepository {
 
                 // With ON DELETE CASCADE enabled, deleting the folder will
                 // automatically cascade to subfolders and requests.
-                tx.execute(
-                    "DELETE FROM folders WHERE id = ?1",
-                    params![&folder_id],
-                )?;
+                tx.execute("DELETE FROM folders WHERE id = ?1", params![&folder_id])?;
 
                 tx.commit()?;
                 Ok(())
@@ -1123,7 +1119,7 @@ impl SqliteRepository {
                         .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
 
                     validate_request_folder_association(&request_collection_id, Some(&folder))
-                        .map_err(|e| folder_validation_to_rusqlite_error(e))?;
+                        .map_err(folder_validation_to_rusqlite_error)?;
                 }
 
                 tx.execute(
@@ -1172,7 +1168,9 @@ fn validate_and_order_imported_folders(
     while !remaining.is_empty() {
         let ready_index = remaining.iter().position(|folder| {
             folder.parent_folder_id.as_ref().is_none_or(|parent_id| {
-                ordered.iter().any(|parent: &Folder| parent.id == *parent_id)
+                ordered
+                    .iter()
+                    .any(|parent: &Folder| parent.id == *parent_id)
             })
         });
 
@@ -1206,7 +1204,9 @@ fn validate_and_order_imported_folders(
     Ok(ordered)
 }
 
-fn load_collections_with_requests(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<CollectionWithRequests>> {
+fn load_collections_with_requests(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<Vec<CollectionWithRequests>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, created_at, updated_at
          FROM collections
@@ -1303,8 +1303,8 @@ fn load_secrets(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<SecretMetad
 
 fn parse_saved_request_record_row(row: &Row<'_>) -> rusqlite::Result<SavedRequestRecord> {
     let draft_json: String = row.get(3)?;
-    let draft = serde_json::from_str::<RequestDraft>(&draft_json)
-        .map_err(|error| json_error(3, error))?;
+    let draft =
+        serde_json::from_str::<RequestDraft>(&draft_json).map_err(|error| json_error(3, error))?;
 
     Ok(SavedRequestRecord {
         id: row.get(0)?,
@@ -1387,14 +1387,16 @@ fn folder_validation_to_rusqlite_error(error: FolderValidationError) -> rusqlite
     rusqlite::Error::FromSqlConversionFailure(
         0,
         rusqlite::types::Type::Text,
-        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, message)),
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message,
+        )),
     )
 }
 
 fn parse_environment_record_row(row: &Row<'_>) -> rusqlite::Result<EnvironmentRecord> {
     let variables_json: String = row.get(2)?;
-    let variables = serde_json::from_str(&variables_json)
-        .map_err(|error| json_error(2, error))?;
+    let variables = serde_json::from_str(&variables_json).map_err(|error| json_error(2, error))?;
 
     Ok(EnvironmentRecord {
         id: row.get(0)?,
@@ -1695,7 +1697,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(moved.requests[0].folder_id.as_deref(), Some(second.id.as_str()));
+        assert_eq!(
+            moved.requests[0].folder_id.as_deref(),
+            Some(second.id.as_str())
+        );
 
         repository
             .update_request_folder(&request.id, None)
@@ -1858,7 +1863,10 @@ mod tests {
 
         assert_eq!(renamed.id, child.id);
         assert_eq!(renamed.collection_id, collection.id);
-        assert_eq!(renamed.parent_folder_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(
+            renamed.parent_folder_id.as_deref(),
+            Some(parent.id.as_str())
+        );
         assert_eq!(renamed.name, "After");
         let loaded = repository
             .get_collection_with_requests(&collection.id)
@@ -2037,9 +2045,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = repository
-            .delete_folder("missing-folder".to_string())
-            .await;
+        let result = repository.delete_folder("missing-folder".to_string()).await;
 
         assert!(result.is_err());
         let loaded = repository
@@ -2193,7 +2199,12 @@ mod tests {
             .await
             .unwrap()
             .is_none());
-        assert!(repository.export_full_snapshot().await.unwrap().collections.is_empty());
+        assert!(repository
+            .export_full_snapshot()
+            .await
+            .unwrap()
+            .collections
+            .is_empty());
     }
 
     #[tokio::test]

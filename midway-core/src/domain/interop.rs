@@ -146,8 +146,8 @@ pub fn make_native_bundle(
 }
 
 pub fn parse_native_bundle(value: Value) -> AppResult<NativeWorkspaceBundle> {
-    let bundle: NativeWorkspaceBundle = serde_json::from_value(value)
-        .map_err(|error| AppError::InvalidJson(error.to_string()))?;
+    let bundle: NativeWorkspaceBundle =
+        serde_json::from_value(value).map_err(|error| AppError::InvalidJson(error.to_string()))?;
 
     if bundle.format != NATIVE_WORKSPACE_FORMAT_ID {
         return Err(AppError::Validation(
@@ -195,7 +195,6 @@ pub fn is_native_workspace_bundle(value: &Value) -> bool {
         .unwrap_or(false)
 }
 
-
 pub fn is_openapi_document(value: &Value) -> bool {
     value
         .get("openapi")
@@ -227,12 +226,14 @@ pub fn is_postman_collection(value: &Value) -> bool {
     let item = value.get("item").and_then(Value::as_array);
 
     match (info, item) {
-        (Some(info), Some(items)) if !items.is_empty() => {
-            info.get("schema")
-                .and_then(Value::as_str)
-                .map(|schema| schema.contains("schema.getpostman.com/collection") || schema.contains("schema.postman.com/collection"))
-                .unwrap_or(true)
-        }
+        (Some(info), Some(items)) if !items.is_empty() => info
+            .get("schema")
+            .and_then(Value::as_str)
+            .map(|schema| {
+                schema.contains("schema.getpostman.com/collection")
+                    || schema.contains("schema.postman.com/collection")
+            })
+            .unwrap_or(true),
         _ => false,
     }
 }
@@ -256,11 +257,8 @@ pub fn export_postman_collection(collection: &CollectionWithRequests) -> AppResu
 /// Empty folders get `"item": []`. Fails the entire export if any element cannot be represented.
 fn build_postman_items_tree(collection: &CollectionWithRequests) -> AppResult<Vec<Value>> {
     // Validate: every request with a folder_id must reference a folder that exists in the collection
-    let folder_ids: std::collections::HashSet<&str> = collection
-        .folders
-        .iter()
-        .map(|f| f.id.as_str())
-        .collect();
+    let folder_ids: std::collections::HashSet<&str> =
+        collection.folders.iter().map(|f| f.id.as_str()).collect();
 
     for record in &collection.requests {
         if let Some(ref fid) = record.folder_id {
@@ -321,11 +319,8 @@ fn build_postman_items_level(
     // Add folder items first (preserving order as stored)
     if let Some(folders) = children_folders.get(&parent_id) {
         for folder in folders {
-            let nested_items = build_postman_items_level(
-                Some(&folder.id),
-                children_folders,
-                requests_by_folder,
-            )?;
+            let nested_items =
+                build_postman_items_level(Some(&folder.id), children_folders, requests_by_folder)?;
             items.push(json!({
                 "name": folder.name,
                 "item": nested_items
@@ -472,10 +467,7 @@ fn collect_postman_items(
     Ok(())
 }
 
-fn parse_postman_request_item(
-    item: &Value,
-    warnings: &mut Vec<String>,
-) -> AppResult<RequestDraft> {
+fn parse_postman_request_item(item: &Value, warnings: &mut Vec<String>) -> AppResult<RequestDraft> {
     let request = item
         .get("request")
         .ok_or_else(|| AppError::Validation("El item Postman no tiene request.".to_string()))?;
@@ -889,23 +881,21 @@ fn split_raw_url(raw: &str) -> (String, Vec<KeyValueRow>) {
 }
 
 fn auth_attr(value: Option<&Value>, key: &str) -> Option<String> {
-    value
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find_map(|item| {
-                let matches = item
-                    .get("key")
-                    .and_then(Value::as_str)
-                    .map(|candidate| candidate == key)
-                    .unwrap_or(false);
+    value.and_then(Value::as_array).and_then(|items| {
+        items.iter().find_map(|item| {
+            let matches = item
+                .get("key")
+                .and_then(Value::as_str)
+                .map(|candidate| candidate == key)
+                .unwrap_or(false);
 
-                if matches {
-                    value_as_string(item.get("value"))
-                } else {
-                    None
-                }
-            })
+            if matches {
+                value_as_string(item.get("value"))
+            } else {
+                None
+            }
         })
+    })
 }
 
 fn value_as_string(value: Option<&Value>) -> Option<String> {
@@ -1015,7 +1005,8 @@ pub fn import_openapi_document(value: &Value) -> AppResult<ParsedOpenApiCollecti
                     value,
                     &mut warnings,
                 );
-                let all_parameters = merge_openapi_parameters(path_parameters.clone(), operation_parameters);
+                let all_parameters =
+                    merge_openapi_parameters(path_parameters.clone(), operation_parameters);
 
                 let mut query = Vec::new();
                 let mut headers = Vec::new();
@@ -1033,11 +1024,12 @@ pub fn import_openapi_document(value: &Value) -> AppResult<ParsedOpenApiCollecti
                         )),
                         "path" => {
                             let placeholder = format!("{{{{{}}}}}", parameter.name);
-                            path_template = path_template.replace(
-                                &format!("{{{}}}", parameter.name),
-                                &placeholder,
-                            );
-                            if !environment_variables.iter().any(|row| row.key == parameter.name) {
+                            path_template = path_template
+                                .replace(&format!("{{{}}}", parameter.name), &placeholder);
+                            if !environment_variables
+                                .iter()
+                                .any(|row| row.key == parameter.name)
+                            {
                                 environment_variables.push(create_env_row(
                                     &parameter.name,
                                     parameter.default_value.as_deref().unwrap_or(""),
@@ -1061,14 +1053,18 @@ pub fn import_openapi_document(value: &Value) -> AppResult<ParsedOpenApiCollecti
                             .filter(|value| !value.is_empty())
                     })
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("{} {}", method_name.to_ascii_uppercase(), path_name));
+                    .unwrap_or_else(|| {
+                        format!("{} {}", method_name.to_ascii_uppercase(), path_name)
+                    });
 
                 let mut auth = AuthConfig::None;
                 let security = operation_object
                     .get("security")
                     .and_then(Value::as_array)
                     .or(global_security);
-                if let Some(config) = parse_openapi_security(security, security_schemes, &mut warnings) {
+                if let Some(config) =
+                    parse_openapi_security(security, security_schemes, &mut warnings)
+                {
                     auth = config;
                 }
 
@@ -1156,12 +1152,18 @@ fn parse_openapi_parameter(
     root: &Value,
     _warnings: &mut Vec<String>,
 ) -> Option<OpenApiParameter> {
-    let name = value.get("name").and_then(Value::as_str)?.trim().to_string();
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
     if name.is_empty() {
         return None;
     }
     let location = value.get("in").and_then(Value::as_str)?.trim().to_string();
-    let schema = value.get("schema").and_then(|schema| resolve_openapi_ref(schema, root));
+    let schema = value
+        .get("schema")
+        .and_then(|schema| resolve_openapi_ref(schema, root));
     let default_value = value
         .get("example")
         .and_then(|value| value_to_string_scalar(Some(value)))
@@ -1190,22 +1192,24 @@ fn parse_openapi_security(
     security_schemes: Option<&Value>,
     warnings: &mut Vec<String>,
 ) -> Option<AuthConfig> {
-    let Some(requirements) = security else {
-        return None;
-    };
+    let requirements = security?;
 
-    let Some(first_requirement) = requirements.iter().find_map(Value::as_object) else {
-        return None;
-    };
-    let Some((scheme_name, _)) = first_requirement.iter().next() else {
-        return None;
-    };
+    let first_requirement = requirements.iter().find_map(Value::as_object)?;
+    let (scheme_name, _) = first_requirement.iter().next()?;
     let scheme = security_schemes
         .and_then(|value| value.get(scheme_name))
         .and_then(Value::as_object)?;
 
-    match scheme.get("type").and_then(Value::as_str).unwrap_or_default() {
-        "http" => match scheme.get("scheme").and_then(Value::as_str).unwrap_or_default() {
+    match scheme
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "http" => match scheme
+            .get("scheme")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
             "bearer" => Some(AuthConfig::Bearer {
                 token: "{{secret:bearer_token}}".to_string(),
             }),
@@ -1285,7 +1289,9 @@ fn parse_openapi_request_body(
         };
     };
 
-    let media = content.get(content_type).and_then(|item| resolve_openapi_ref(item, root));
+    let media = content
+        .get(content_type)
+        .and_then(|item| resolve_openapi_ref(item, root));
     let schema = media
         .as_ref()
         .and_then(|media| media.get("schema"))
@@ -1297,11 +1303,18 @@ fn parse_openapi_request_body(
 
     match content_type {
         "application/json" => {
-            if !headers.iter().any(|row| row.key.eq_ignore_ascii_case("content-type")) {
+            if !headers
+                .iter()
+                .any(|row| row.key.eq_ignore_ascii_case("content-type"))
+            {
                 headers.push(create_row_with_value("content-type", "application/json"));
             }
             let example = explicit_example
-                .or_else(|| schema.as_ref().map(|schema| generate_openapi_example(schema, root)))
+                .or_else(|| {
+                    schema
+                        .as_ref()
+                        .map(|schema| generate_openapi_example(schema, root))
+                })
                 .unwrap_or_else(|| json!({}));
             let value = serde_json::to_string_pretty(&example).unwrap_or_else(|_| "{}".to_string());
             RequestBodyDraft {
@@ -1335,7 +1348,9 @@ fn parse_openapi_request_body(
                                 "".to_string()
                             } else {
                                 value_to_string_scalar(resolved_property.get("example"))
-                                    .or_else(|| value_to_string_scalar(resolved_property.get("default")))
+                                    .or_else(|| {
+                                        value_to_string_scalar(resolved_property.get("default"))
+                                    })
                                     .unwrap_or_default()
                             };
                             FormDataRow {
@@ -1358,7 +1373,10 @@ fn parse_openapi_request_body(
             }
         }
         "application/x-www-form-urlencoded" => {
-            if !headers.iter().any(|row| row.key.eq_ignore_ascii_case("content-type")) {
+            if !headers
+                .iter()
+                .any(|row| row.key.eq_ignore_ascii_case("content-type"))
+            {
                 headers.push(create_row_with_value(
                     "content-type",
                     "application/x-www-form-urlencoded",
@@ -1372,7 +1390,13 @@ fn parse_openapi_request_body(
                 .as_object()
                 .map(|map| {
                     map.iter()
-                        .map(|(key, value)| format!("{}={}", key, value_to_string_scalar(Some(value)).unwrap_or_default()))
+                        .map(|(key, value)| {
+                            format!(
+                                "{}={}",
+                                key,
+                                value_to_string_scalar(Some(value)).unwrap_or_default()
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("&")
                 })
@@ -1387,7 +1411,11 @@ fn parse_openapi_request_body(
             mode: BodyMode::Text,
             value: explicit_example
                 .and_then(|value| value_to_string_scalar(Some(&value)))
-                .or_else(|| schema.as_ref().map(|schema| generate_openapi_example(schema, root).to_string()))
+                .or_else(|| {
+                    schema
+                        .as_ref()
+                        .map(|schema| generate_openapi_example(schema, root).to_string())
+                })
                 .unwrap_or_default(),
             form_data: Vec::new(),
         },
@@ -1400,7 +1428,11 @@ fn parse_openapi_request_body(
                 mode: BodyMode::Text,
                 value: explicit_example
                     .map(|value| value.to_string())
-                    .or_else(|| schema.as_ref().map(|schema| generate_openapi_example(schema, root).to_string()))
+                    .or_else(|| {
+                        schema
+                            .as_ref()
+                            .map(|schema| generate_openapi_example(schema, root).to_string())
+                    })
                     .unwrap_or_default(),
                 form_data: Vec::new(),
             }
@@ -1536,8 +1568,8 @@ fn value_to_string_scalar(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workspace::{CollectionSummary, SavedRequestRecord};
     use crate::domain::http::HttpMethod;
+    use crate::domain::workspace::{CollectionSummary, SavedRequestRecord};
 
     // ─── Task 5.3: Preservar import/export nativo v1 y OpenAPI v3 ────────────────
 
@@ -1591,7 +1623,10 @@ mod tests {
         assert_eq!(bundle.snapshot.collections.len(), 1);
         let col = &bundle.snapshot.collections[0];
         // folders defaults to empty — no spurious Folder entities
-        assert!(col.folders.is_empty(), "v1 bundle without folders field should deserialize with empty folders Vec");
+        assert!(
+            col.folders.is_empty(),
+            "v1 bundle without folders field should deserialize with empty folders Vec"
+        );
         // request name is preserved without alteration
         assert_eq!(col.requests[0].name, "Get Users");
         assert_eq!(col.collection.name, "My Collection");
@@ -1681,7 +1716,10 @@ mod tests {
 
         assert_eq!(reimported.snapshot.collections.len(), 1);
         let col = &reimported.snapshot.collections[0];
-        assert!(col.folders.is_empty(), "round-tripped bundle should have no spurious folders");
+        assert!(
+            col.folders.is_empty(),
+            "round-tripped bundle should have no spurious folders"
+        );
         assert_eq!(col.requests.len(), 1);
         assert_eq!(col.requests[0].name, "My Request");
         assert_eq!(col.collection.name, "Original Collection");
@@ -1725,7 +1763,10 @@ mod tests {
         let parsed = import_openapi_document(&openapi_doc).unwrap();
         // ParsedOpenApiCollection has no folders field — it only produces requests
         // Verify the structure doesn't inadvertently produce folder-like data
-        assert!(!parsed.requests.is_empty(), "should import at least one request");
+        assert!(
+            !parsed.requests.is_empty(),
+            "should import at least one request"
+        );
         assert_eq!(parsed.collection_name, "Test API");
         // None of the requests should have folder path prefixes
         for request in &parsed.requests {
@@ -1751,33 +1792,31 @@ mod tests {
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
             },
             folders: Vec::new(),
-            requests: vec![
-                SavedRequestRecord {
-                    id: "req-1".to_string(),
-                    collection_id: "col-1".to_string(),
-                    folder_id: None,
+            requests: vec![SavedRequestRecord {
+                id: "req-1".to_string(),
+                collection_id: "col-1".to_string(),
+                folder_id: None,
+                name: "Get Users".to_string(),
+                draft: RequestDraft {
+                    id: None,
                     name: "Get Users".to_string(),
-                    draft: RequestDraft {
-                        id: None,
-                        name: "Get Users".to_string(),
-                        method: HttpMethod::GET,
-                        url: "https://api.example.com/users".to_string(),
-                        query: Vec::new(),
-                        headers: Vec::new(),
-                        auth: AuthConfig::None,
-                        body: RequestBodyDraft {
-                            mode: BodyMode::None,
-                            value: String::new(),
-                            form_data: Vec::new(),
-                        },
-                        timeout_ms: 30000,
-                        environment_id: None,
-                        response_tests: Vec::new(),
+                    method: HttpMethod::GET,
+                    url: "https://api.example.com/users".to_string(),
+                    query: Vec::new(),
+                    headers: Vec::new(),
+                    auth: AuthConfig::None,
+                    body: RequestBodyDraft {
+                        mode: BodyMode::None,
+                        value: String::new(),
+                        form_data: Vec::new(),
                     },
-                    created_at: "2024-01-01T00:00:00Z".to_string(),
-                    updated_at: "2024-01-01T00:00:00Z".to_string(),
+                    timeout_ms: 30000,
+                    environment_id: None,
+                    response_tests: Vec::new(),
                 },
-            ],
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            }],
         };
 
         let exported = export_postman_collection(&collection).unwrap();
@@ -1785,8 +1824,14 @@ mod tests {
         assert_eq!(items.len(), 1);
         // Each item should be a request item (has "request"), not a folder item (has "item")
         for item in items {
-            assert!(item.get("request").is_some(), "flat export should produce request items, not folder items");
-            assert!(item.get("item").is_none(), "flat export should not have nested item arrays");
+            assert!(
+                item.get("request").is_some(),
+                "flat export should produce request items, not folder items"
+            );
+            assert!(
+                item.get("item").is_none(),
+                "flat export should not have nested item arrays"
+            );
         }
     }
 
@@ -1879,7 +1924,10 @@ mod tests {
             exported["info"]["name"].as_str().unwrap(),
             "Nested Collection"
         );
-        assert!(exported["info"]["schema"].as_str().unwrap().contains("schema.getpostman.com"));
+        assert!(exported["info"]["schema"]
+            .as_str()
+            .unwrap()
+            .contains("schema.getpostman.com"));
 
         let top_items = exported["item"].as_array().unwrap();
         // Should have: folder "Auth" first, then top-level request "Health Check"
@@ -1888,8 +1936,14 @@ mod tests {
         // First item is the "Auth" folder
         let auth_folder = &top_items[0];
         assert_eq!(auth_folder["name"].as_str().unwrap(), "Auth");
-        assert!(auth_folder.get("item").is_some(), "folder should have nested item array");
-        assert!(auth_folder.get("request").is_none(), "folder should not have a request field");
+        assert!(
+            auth_folder.get("item").is_some(),
+            "folder should have nested item array"
+        );
+        assert!(
+            auth_folder.get("request").is_none(),
+            "folder should not have a request field"
+        );
 
         // Inside "Auth" there should be the "OAuth" subfolder
         let auth_children = auth_folder["item"].as_array().unwrap();
@@ -1981,7 +2035,10 @@ mod tests {
         };
 
         let result = export_postman_collection(&collection);
-        assert!(result.is_err(), "should fail export when request references nonexistent folder");
+        assert!(
+            result.is_err(),
+            "should fail export when request references nonexistent folder"
+        );
     }
 
     #[test]
@@ -2004,7 +2061,10 @@ mod tests {
         };
 
         let result = export_postman_collection(&collection);
-        assert!(result.is_err(), "should fail export when folder references nonexistent parent");
+        assert!(
+            result.is_err(),
+            "should fail export when folder references nonexistent parent"
+        );
     }
 
     // ─── End Task 5.2 ────────────────────────────────────────────────────────────
@@ -2063,6 +2123,9 @@ mod tests {
         assert_eq!(parsed.collection_name, "Users API");
         assert_eq!(parsed.requests.len(), 2);
         assert!(parsed.variables.iter().any(|row| row.key == "base_url"));
-        assert!(parsed.requests.iter().any(|request| request.url.contains("{{id}}")));
+        assert!(parsed
+            .requests
+            .iter()
+            .any(|request| request.url.contains("{{id}}")));
     }
 }

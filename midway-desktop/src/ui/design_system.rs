@@ -177,8 +177,9 @@ pub fn contrast_text_color(background: Color) -> Color {
             ((v + 0.055) / 1.055).powf(2.4)
         }
     }
-    let luminance =
-        0.2126 * linearize(background.r) + 0.7152 * linearize(background.g) + 0.0722 * linearize(background.b);
+    let luminance = 0.2126 * linearize(background.r)
+        + 0.7152 * linearize(background.g)
+        + 0.0722 * linearize(background.b);
     // Compare contrast ratios: white on bg vs black on bg
     // Contrast ratio = (L1 + 0.05) / (L2 + 0.05) where L1 > L2
     // White luminance = 1.0, Black luminance = 0.0

@@ -49,7 +49,9 @@ pub fn view<'a>(ds: &DesignSystem) -> Element<'a, Message> {
         },
         ..button::Style::default()
     })
-    .on_press(Message::ActivityBar(ActivityBarMessage::CreateCollectionPressed));
+    .on_press(Message::ActivityBar(
+        ActivityBarMessage::CreateCollectionPressed,
+    ));
 
     let content = column![title, subtitle, create_button]
         .spacing(ds.spacing.md)
@@ -70,25 +72,25 @@ mod tests {
     //! Validates: Requirements 1.1, 1.4
 
     use super::*;
+    use crate::app::{
+        MainContentFocus, Midway, PaletteState, RequestTabState, SessionStoreState, TopBarMode,
+        TreeViewState, UpdaterState, WorkspacePanelState,
+    };
+    use crate::curl::create_blank_draft;
+    use crate::state::AppState;
+    use midway_core::domain::cookies::CookieJarHandle;
     use midway_core::domain::workspace::{CollectionSummary, CollectionWithRequests};
     use midway_core::infra::sqlite_repository::SqliteRepository;
     use midway_core::runtime::request_executor::RequestExecutorHandle;
     use midway_core::runtime::secret_executor::SecretExecutorHandle;
-    use midway_core::domain::cookies::CookieJarHandle;
-    use crate::app::{
-        MainContentFocus, Midway, RequestTabState, WorkspacePanelState,
-        PaletteState, SessionStoreState, UpdaterState, TopBarMode, TreeViewState,
-    };
-    use crate::curl::create_blank_draft;
-    use crate::state::AppState;
     use proptest::prelude::*;
     use std::collections::VecDeque;
     use std::sync::Arc;
 
     /// Build a minimal AppState for testing (opens a temp SQLite DB).
     fn build_test_app_state() -> AppState {
-        let temp_file = tempfile::NamedTempFile::new()
-            .expect("failed to create temp file for test AppState");
+        let temp_file =
+            tempfile::NamedTempFile::new().expect("failed to create temp file for test AppState");
         let db_path = temp_file.path().to_path_buf();
 
         let runtime = tokio::runtime::Runtime::new()
@@ -136,7 +138,7 @@ mod tests {
             palette: PaletteState::default(),
             runner: None,
             session: SessionStoreState::default(),
-            theme_mode: Default::default(),
+            theme: crate::ui::theme_settings::ThemeSettingsState::default(),
             main_content_focus: focus,
             updater: UpdaterState::default(),
             crash_log: Vec::new(),
@@ -183,7 +185,7 @@ mod tests {
                     let mut seen = std::collections::HashSet::new();
                     ids.into_iter()
                         .filter(|id| seen.insert(id.clone()))
-                        .map(|id| collection_with_id(id))
+                        .map(collection_with_id)
                         .collect::<Vec<_>>()
                 })
                 .prop_filter("must have at least one collection", |v| !v.is_empty()),
@@ -217,7 +219,7 @@ mod tests {
             let state = build_test_midway_with(
                 app_state,
                 collections.clone(),
-                focus.clone(),
+                focus,
             );
 
             let result = should_show_onboarding(&state);

@@ -138,7 +138,7 @@ pub struct WorkspaceSnapshot {
 /// Validates that `name.trim()` has between 1 and 100 characters (Req 3.1).
 pub fn validate_folder_name(name: &str) -> Result<(), FolderValidationError> {
     let trimmed_len = name.trim().chars().count();
-    if trimmed_len < 1 || trimmed_len > 100 {
+    if !(1..=100).contains(&trimmed_len) {
         Err(FolderValidationError::NameLength { len: trimmed_len })
     } else {
         Ok(())
@@ -219,7 +219,6 @@ pub fn validate_request_folder_association(
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
