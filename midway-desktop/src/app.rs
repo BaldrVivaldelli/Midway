@@ -9107,7 +9107,7 @@ mod tests {
         assert_eq!(assertion.expected, "200");
 
         let response = build_test_response(200, vec![], "", "https://example.com");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -9146,7 +9146,7 @@ mod tests {
             "",
             "https://example.com",
         );
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -9178,7 +9178,7 @@ mod tests {
         assert_eq!(assertion.expected, "hello");
 
         let response = build_test_response(200, vec![], "hello world", "https://example.com");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -9210,7 +9210,7 @@ mod tests {
         assert_eq!(assertion.expected, "Ana");
 
         let response = build_test_response(200, vec![], r#"{"name":"Ana"}"#, "https://example.com");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 1);
@@ -9243,7 +9243,7 @@ mod tests {
         assert_eq!(assertion.expected, "localhost");
 
         let response = build_test_response(200, vec![], "", "http://localhost:8080/api");
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 0);
@@ -9292,7 +9292,7 @@ mod tests {
             "",
             "https://example.com",
         );
-        let report = evaluate_response_assertions(&response, &vec![assertion]);
+        let report = evaluate_response_assertions(&response, &[assertion]);
 
         assert_eq!(report.total, 1);
         assert_eq!(report.passed, 0);

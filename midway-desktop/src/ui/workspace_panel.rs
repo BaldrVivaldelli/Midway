@@ -115,11 +115,7 @@ pub fn section_content<'a>(state: &'a Midway, _ds: &DesignSystem) -> Element<'a,
 fn section_tabs<'a>(state: &'a Midway) -> Element<'a, Message> {
     let active = state.workspace_panel.active_section;
 
-    let entries: Vec<(
-        WorkspacePanelSection,
-        &'static str,
-        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
-    )> = vec![
+    let entries: Vec<tab_bar::TabEntry<'a, Message, WorkspacePanelSection>> = vec![
         (
             WorkspacePanelSection::Environments,
             "Environments",

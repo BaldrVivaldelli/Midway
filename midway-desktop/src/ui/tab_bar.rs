@@ -7,6 +7,15 @@ use iced::{font, Border, Element, Font, Length};
 
 use crate::ui::design_system::DesignSystem;
 
+/// Entrada diferida de una tab: identificador, etiqueta y constructor de su
+/// contenido. El alias mantiene legibles las firmas de los distintos paneles
+/// que comparten este widget.
+pub type TabEntry<'a, Message, TabId> = (
+    TabId,
+    &'static str,
+    Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
+);
+
 /// Renders a flat tab bar + the active tab's content below it.
 ///
 /// El contenido de cada tab se recibe como closure y solo se invoca el de la
@@ -14,11 +23,7 @@ use crate::ui::design_system::DesignSystem;
 /// descartarlos desperdicia trabajo (y en la tab Body del
 /// `Response_Inspector`, el shaping del payload completo).
 pub fn tabs<'a, Message, TabId, F>(
-    entries: Vec<(
-        TabId,
-        &'static str,
-        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
-    )>,
+    entries: Vec<TabEntry<'a, Message, TabId>>,
     active: &TabId,
     on_select: F,
     ds: &DesignSystem,

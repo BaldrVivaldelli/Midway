@@ -13,8 +13,8 @@
 //! `rename` mismo (una operación indivisible a nivel de sistema operativo).
 //!
 //! `TabSnapshot`/`RequestTab` se reutilizan tal cual desde `crate::app`
-//! (coinciden exactamente con la forma descrita en el diseño, "Data Models
-//! > Formato de sesión persistida"), en lugar de duplicar un tipo idéntico
+//! (coinciden exactamente con la forma descrita en el diseño, sección
+//! "Data Models / Formato de sesión persistida"), en lugar de duplicar un tipo idéntico
 //! aquí.
 //!
 //! El descarte seguro de una sesión corrupta o con `version` incompatible
@@ -222,17 +222,17 @@ fn read_session_snapshot_at(path: &Path) -> AppResult<SessionSnapshot> {
 /// Distingue tres casos, porque solo uno de ellos amerita una notificación
 /// visible al usuario:
 ///
-/// - [`SessionLoadOutcome::Loaded`]: `session.json` existe, se pudo
+/// - [`SessionLoadOutcome::Loaded`] — `session.json` existe, se pudo
 ///   deserializar y su `version` coincide con [`SESSION_SCHEMA_VERSION`].
 ///   Caso normal, sin notificación.
-/// - [`SessionLoadOutcome::NotFound`]: `session.json` no existe todavía
+/// - [`SessionLoadOutcome::NotFound`] — `session.json` no existe todavía
 ///   (primer arranque, o la app se ejecuta con un data dir nuevo). Esto NO
 ///   es una sesión "corrupta o incompatible" en el sentido del Criterio
 ///   6.10 (que enumera explícitamente solo "falla la deserialización" o
 ///   "`version` no es compatible"), así que tampoco amerita notificación:
 ///   mostrar "tu sesión estaba corrupta" en una instalación nueva sería un
 ///   falso positivo confuso para el usuario.
-/// - [`SessionLoadOutcome::DiscardedCorruptOrIncompatible`]: `session.json`
+/// - [`SessionLoadOutcome::DiscardedCorruptOrIncompatible`] — `session.json`
 ///   existe pero no se pudo leer/deserializar, o se pudo deserializar pero
 ///   su `version` no coincide con [`SESSION_SCHEMA_VERSION`]. Este es el
 ///   único caso que amerita notificar al usuario (Criterio 6.10): el

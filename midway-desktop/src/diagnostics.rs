@@ -125,7 +125,7 @@ fn test_diagnostics_path_override() -> Option<PathBuf> {
 
 #[cfg(test)]
 thread_local! {
-    static TEST_DIAGNOSTICS_PATH_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
+    static TEST_DIAGNOSTICS_PATH_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Lee y deserializa los `CrashRecord` persistidos en `diagnostics.json`.

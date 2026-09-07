@@ -323,11 +323,7 @@ pub fn editor<'a>(
 /// Tests (Tarea 5.8) ya tienen su editor real; solo Body sigue mostrando un
 /// placeholder.
 fn config_tabs<'a>(active_tab: &'a RequestTabState, ds: &DesignSystem) -> Element<'a, Message> {
-    let entries: Vec<(
-        RequestTab,
-        &'static str,
-        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
-    )> = vec![
+    let entries: Vec<tab_bar::TabEntry<'a, Message, RequestTab>> = vec![
         (
             RequestTab::Params,
             "Params",
@@ -1016,7 +1012,7 @@ mod presentation_tests {
 
     #[test]
     fn body_editor_uses_a_workspace_sized_height() {
-        assert!(BODY_TEXT_EDITOR_HEIGHT >= 360.0);
+        const { assert!(BODY_TEXT_EDITOR_HEIGHT >= 360.0) };
     }
 }
 

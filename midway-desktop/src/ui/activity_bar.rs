@@ -629,7 +629,7 @@ mod tests {
                 Just(HoveredItem::Home),
                 Just(HoveredItem::Activity),
                 Just(HoveredItem::CreateButton),
-                "[^\\x00]{1,100}".prop_map(|name| HoveredItem::Collection(name)),
+                "[^\\x00]{1,100}".prop_map(HoveredItem::Collection),
             ]
         }
 
@@ -714,7 +714,7 @@ mod tests {
                     // Case: active_id is None (no collection active)
                     Just(None),
                     // Case: active_id is some other id (different collection active)
-                    "[a-z0-9\\-]{1,36}".prop_map(|other| Some(other)),
+                    "[a-z0-9\\-]{1,36}".prop_map(Some),
                 ];
                 active_id_strategy.prop_map(move |active_id| (active_id, col_id_clone.clone()))
             })

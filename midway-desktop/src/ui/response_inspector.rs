@@ -198,11 +198,7 @@ fn response_tabs<'a>(
     ds: &DesignSystem,
 ) -> Element<'a, Message> {
     let ds_owned = *ds;
-    let entries: Vec<(
-        ResponseInspectorTab,
-        &'static str,
-        Box<dyn FnOnce() -> Element<'a, Message> + 'a>,
-    )> = vec![
+    let entries: Vec<tab_bar::TabEntry<'a, Message, ResponseInspectorTab>> = vec![
         (
             ResponseInspectorTab::Body,
             "Body",

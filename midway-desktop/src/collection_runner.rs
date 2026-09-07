@@ -442,7 +442,7 @@ mod tests {
     //! Verifica el mecanismo de progreso incremental de `run_collection`
     //! (envío por `mpsc::UnboundedSender<CollectionRunProgressEvent>`) contra
     //! un `AppState` real (`SqliteRepository` en un archivo SQLite temporal
-    //! + `RequestExecutorHandle` real) y un servidor HTTP mock local
+    //! junto con un `RequestExecutorHandle` real) y un servidor HTTP mock local
     //! (`wiremock`), sin mockear `run_collection` en sí. No repite la
     //! cobertura de las fases 9.3-9.6 (reporte consolidado detallado,
     //! environment de override, fallos por request, colección vacía,

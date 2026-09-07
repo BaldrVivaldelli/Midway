@@ -185,7 +185,7 @@ mod tests {
                     let mut seen = std::collections::HashSet::new();
                     ids.into_iter()
                         .filter(|id| seen.insert(id.clone()))
-                        .map(|id| collection_with_id(id))
+                        .map(collection_with_id)
                         .collect::<Vec<_>>()
                 })
                 .prop_filter("must have at least one collection", |v| !v.is_empty()),
@@ -219,7 +219,7 @@ mod tests {
             let state = build_test_midway_with(
                 app_state,
                 collections.clone(),
-                focus.clone(),
+                focus,
             );
 
             let result = should_show_onboarding(&state);

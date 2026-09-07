@@ -97,7 +97,7 @@ pub fn build_tree(folders: &[Folder], requests: &[SavedRequestRecord]) -> TreeNo
         .iter()
         .filter(|f| f.parent_folder_id.is_none())
         .collect();
-    root_folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    root_folders.sort_by_key(|folder| folder.name.to_lowercase());
 
     // Collect root-level requests (folder_id == None)
     let mut root_requests: Vec<SavedRequestRecord> = requests
@@ -105,7 +105,7 @@ pub fn build_tree(folders: &[Folder], requests: &[SavedRequestRecord]) -> TreeNo
         .filter(|r| r.folder_id.is_none())
         .cloned()
         .collect();
-    root_requests.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    root_requests.sort_by_key(|request| request.name.to_lowercase());
 
     let child_folder_nodes = root_folders
         .into_iter()
@@ -129,14 +129,14 @@ fn build_subtree(
         .iter()
         .filter(|f| f.parent_folder_id.as_deref() == Some(&folder.id))
         .collect();
-    children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    children.sort_by_key(|child| child.name.to_lowercase());
 
     let mut folder_requests: Vec<SavedRequestRecord> = all_requests
         .iter()
         .filter(|r| r.folder_id.as_deref() == Some(&folder.id))
         .cloned()
         .collect();
-    folder_requests.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    folder_requests.sort_by_key(|request| request.name.to_lowercase());
 
     let child_folder_nodes = children
         .into_iter()
